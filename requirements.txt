@@ -1,0 +1,10 @@
+twitchio
+keyboard
+ollama
+soundfile
+pygame
+mutagen
+pydub
+gtts
+discord.py[voice]
+python-dotenv

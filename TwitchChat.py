@@ -18,9 +18,9 @@ class TwitchChat(commands.Bot):
     audio_player = None
 
     def __init__(self):
-        super().__init__(token=os.getenv('TWITCH_ACCESS_TOKEN'), prefix='?', initial_channels=[TWITCH_CHANNEL_NAME])
-        self.tts_manager = TTSManager()
-        self.audio_player = AudioManager()
+        super().__init__(token=os.getenv("TWITCH_ACCESS_TOKEN"), prefix='?', initial_channels=[TWITCH_CHANNEL_NAME])
+        #self.tts_manager = TTSManager()
+        #self.audio_player = AudioManager()
 
     async def event_ready(self):
         print(f'Logged in as | {self.nick}')
@@ -32,12 +32,6 @@ class TwitchChat(commands.Bot):
     async def process_message(self, message: Message):
         print("We got a message from this person: " + message.author.name)
         print("Their message was " + message.content)
-        audio_file = self.tts_manager.text_to_audio(message.content)
-        self.audio_player.play_audio(audio_file)
 
 
-def startTwitchBot():
-    global twitchbot
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    twitchbot = TwitchChat()
-    twitchbot.run()
+#twitchbot.run()

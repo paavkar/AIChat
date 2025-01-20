@@ -3,7 +3,7 @@ import dotenv
 
 dotenv.load_dotenv()
 
-class OllamaClient():
+class OllamaClient:
     def __init__(self):
         self.client = AsyncClient(
             host='http://localhost:11434',

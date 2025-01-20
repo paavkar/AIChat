@@ -101,12 +101,3 @@ class SpeechToTextManager:
         final_result = " ".join(all_results).strip()
         print(f"\n\nHere's the result we got!\n\n{final_result}\n\n")
         return final_result
-
-def start_speech_to_text():
-    speechtotext_manager = SpeechToTextManager()
-
-    while True:
-        # speechtotext_manager.speechtotext_from_mic()
-        #result = speechtotext_manager.speechtotext_from_mic_continuous()
-        #print(f"\n\nHERE IS THE RESULT:\n{result}")
-        time.sleep(60)

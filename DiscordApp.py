@@ -14,7 +14,10 @@ connections = {}
 
 @client.event
 async def on_ready():
+    global guild
     print(f'Logged on as {client.user}!')
+    guild_id = os.getenv('DISCORD_GUILD')
+    guild = client.get_guild(int(guild_id))
 
 @client.event
 async def on_message(message):
@@ -25,20 +28,30 @@ async def on_message(message):
     if message.content.startswith('$hello'):
         await message.channel.send('Hello!')
 
-@client.command()
-async def record(ctx):  # If you're using commands.Bot, this will also work.
+async def get_vc(ctx):
     voice = ctx.author.voice
 
-    if not voice:
-        await ctx.respond("You aren't in a voice channel!")
+    #if not voice:
+    #    await ctx.respond("You aren't in a voice channel!")
 
-    print(ctx.guild.id in connections)
+    channel = discord.utils.get(guild.channels, name="General")
 
     if ctx.guild.id not in connections:
-        vc = await voice.channel.connect()  # Connect to the voice channel the author is in.
+        vc = await channel.connect()  # Connect to the voice channel the author is in.
         connections.update({ctx.guild.id: vc})  # Updating the cache with the guild and channel.
     else:
         vc = connections[ctx.guild.id]
+
+    return vc
+
+@client.command()
+async def join(ctx):
+    vc = await get_vc(ctx)
+    await ctx.send(f"Connected to voice chat: {vc.channel}")
+
+@client.command()
+async def record(ctx):
+    vc = await get_vc(ctx)
 
     vc.start_recording(
         discord.sinks.WaveSink(),  # The sink type to use.

@@ -10,8 +10,5 @@ if __name__ == '__main__':
     #bot_thread = threading.Thread(target=startTwitchBot)
     #bot_thread.start()
 
-    #speech_thread = threading.Thread(target=start_speech_to_text())
-    #speech_thread.start()
-
     discord_thread = threading.Thread(target=start_discord_bot())
     discord_thread.start()

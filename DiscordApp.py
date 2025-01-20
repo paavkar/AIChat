@@ -1,6 +1,9 @@
 import discord
+from discord.ext import commands
 import os
 import dotenv
+
+from OllamaTest import OllamaClient
 
 dotenv.load_dotenv()
 
@@ -9,15 +12,22 @@ intents.members = True
 intents.message_content = True
 intents.voice_states = True
 
-client = discord.Bot(intents=intents)
+#client = discord.Bot(intents=intents)
+client = commands.Bot(command_prefix='!', intents=intents)
 connections = {}
 
 @client.event
 async def on_ready():
     global guild
+    global channel
+    global ollama_client
     print(f'Logged on as {client.user}!')
     guild_id = os.getenv('DISCORD_GUILD')
     guild = client.get_guild(int(guild_id))
+    channel = discord.utils.get(guild.channels, name="General")
+
+    vc = await join_vc()
+    ollama_client = OllamaClient()
 
 @client.event
 async def on_message(message):
@@ -25,16 +35,25 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    if message.content.startswith('$hello'):
-        await message.channel.send('Hello!')
+    await client.process_commands(message)
+
+    # an example of using ollama
+    #ollama_message = await ollama_client.ollama_chat()
+
+async def join_vc():
+    if guild.id not in connections:
+        vc = await channel.connect()  # Connect to the voice channel the author is in.
+        connections.update({guild.id: vc})  # Updating the cache with the guild and channel.
+    else:
+        vc = connections[guild.id]
+
+    return vc
 
 async def get_vc(ctx):
     voice = ctx.author.voice
 
     #if not voice:
     #    await ctx.respond("You aren't in a voice channel!")
-
-    channel = discord.utils.get(guild.channels, name="General")
 
     if ctx.guild.id not in connections:
         vc = await channel.connect()  # Connect to the voice channel the author is in.
@@ -83,7 +102,8 @@ async def stop_recording(ctx):
 async def leave(ctx):
     if ctx.guild.id in connections:  # Check if the guild is in the cache.
         del connections[ctx.guild.id]  # Remove the guild from the cache.
-        await ctx.delete()  # And delete.
+        #await ctx.delete()  # And delete.
+        await ctx.voice_client.disconnect()
     else:
         await ctx.respond("I am currently not recording here.")  # Respond with this if we aren't recording.
 

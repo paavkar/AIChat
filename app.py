@@ -1,5 +1,6 @@
 import threading
 import asyncio
+
 from TwitchChat import *
 from SpeechToText import *
 from DiscordApp import *

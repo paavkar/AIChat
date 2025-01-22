@@ -74,6 +74,41 @@ class DiscordClient(commands.Bot):
     def test_send(self):
         print("test")
 
+    async def record(self):
+        vc = await self.get_vc()
+        audio_file_path = os.path.join(audio_directory, "recording.wav")
+
+        if len(self.vc.channel.members) > 1 and self.user in self.vc.channel.members:
+            try:
+                audio_sink = voice_recv.WaveSink(audio_file_path)
+                if not self.vc.is_listening():
+                    self.vc.listen(audio_sink)
+                else:
+                    return
+                self.check_inactivity_task.start()
+            except Exception as e:
+                print(e)
+        else:
+            print("Bot not in vc")
+
+    @tasks.loop(seconds=0.1)
+    async def check_inactivity_task(self):
+        audio_file_path = os.path.join(audio_directory, "recording.wav")
+        current_time = asyncio.get_event_loop().time()
+
+        for member in self.vc.channel.members:
+            if self.vc.get_speaking(member):
+                self.last_activity = current_time
+                return
+
+        if self.last_activity and (current_time - self.last_activity > 1.0):
+            self.vc.stop_listening()
+            await self.text_channel.send("stopped recording.")
+            # if os.path.exists(audio_file_path):
+            #    await self.text_channel.send(file=discord.File(audio_file_path))
+            self.check_inactivity_task.stop()
+            self.last_activity = None
+
 bot_intents = discord.Intents.default()
 bot_intents.members = True
 bot_intents.message_content = True
@@ -90,62 +125,10 @@ async def join(ctx):
 
 @discord_client.command()
 async def record(ctx):
-    vc = await discord_client.get_vc()
-    audio_file_path = os.path.join(audio_directory, "recording.wav")
-
-    if len(vc.channel.members) > 1 and discord_client.user in vc.channel.members:
-        try:
-            audio_sink = voice_recv.WaveSink(audio_file_path)
-            if not vc.is_listening():
-                vc.listen(audio_sink)
-            check_inactivity_task.start(vc)
-        except Exception as e:
-            print(e)
-    else:
-        print("Bot not in vc")
+    await discord_client.record()
 
     #if os.path.exists(audio_file_path):
     #    await ctx.send(file=discord.File(audio_file_path))
-
-
-@tasks.loop(seconds=0.1)
-async def check_inactivity_task(vc):
-    audio_file_path = os.path.join(audio_directory, "recording.wav")
-    current_time = asyncio.get_event_loop().time()
-
-    for member in vc.channel.members:
-        if vc.get_speaking(member):
-            discord_client.last_activity = current_time
-            return
-
-    if discord_client.last_activity and (current_time - discord_client.last_activity > 1.0):
-        discord_client.vc.stop_listening()
-        await discord_client.text_channel.send("stopped recording.")
-        #if os.path.exists(audio_file_path):
-        #    await discord_client.text_channel.send(file=discord.File(audio_file_path))
-        check_inactivity_task.stop()
-        discord_client.last_activity = None
-
-#@discord_client.command()
-#async def record(ctx: commands.Context):
-#    vc = await discord_client.get_vc()
-#
-#    vc.start_recording(
-#        discord.sinks.WaveSink(),  # The sink type to use.
-#        once_done,  # What to do once done.
-#        discord_client.channel  # The channel to disconnect from.
-#    )
-
-#async def once_done(sink: discord.sinks, channel: discord.TextChannel,
-#                    *args):  # Our voice client already passes these in.
-#    recorded_users = [  # A list of recorded users
-#        f"<@{user_id}>"
-#        for user_id, audio in sink.audio_data.items()
-#    ]
-#    # await sink.vc.disconnect()  # Disconnect from the voice channel.
-#    files = [discord.File(audio.file, f"{user_id}.{sink.encoding}") for user_id, audio in
-#             sink.audio_data.items()]  # List down the files.
-#    await discord_client.text_channel.send(f"finished recording audio for: {', '.join(recorded_users)}.", files=files)
 
 @discord_client.command(name="stop")
 async def stop_recording(ctx):

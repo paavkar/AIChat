@@ -2,9 +2,9 @@ import os
 import threading
 import asyncio
 
-from TwitchChat import *
-from SpeechToText import *
-from DiscordApp import *
+from TwitchChat import TwitchChat, start_twitch_bot
+#from SpeechToText import *
+from DiscordApp import discord_client, start_discord_bot
 
 async def main():
     twitchbot = TwitchChat()
@@ -20,4 +20,6 @@ if __name__ == '__main__':
     #discord_thread = threading.Thread(target=discord_client.run(os.getenv('DISCORD_TOKEN')))
     #discord_thread.start()
 
-    asyncio.run(main())
+    #asyncio.run(main())
+    start_discord_bot()
+    #start_twitch_bot()

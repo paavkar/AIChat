@@ -6,5 +6,7 @@ pygame
 mutagen
 pydub
 gtts
-py-cord[voice]
+discord.py[voice]
+discord-ext-voice-recv
+#py-cord[voice]
 python-dotenv

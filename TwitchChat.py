@@ -5,8 +5,8 @@ import random
 import asyncio
 from twitchio.ext import commands
 from twitchio import *
-from TextToSpeech import *
-from AudioPlayer import *
+#from TextToSpeech import *
+#from AudioPlayer import *
 import dotenv
 
 dotenv.load_dotenv()
@@ -33,5 +33,6 @@ class TwitchChat(commands.Bot):
         print("We got a message from this person: " + message.author.name)
         print("Their message was " + message.content)
 
-
-#twitchbot.run()
+def start_twitch_bot():
+    twitch_bot = TwitchChat()
+    twitch_bot.run()

@@ -45,37 +45,32 @@ class DiscordClient(commands.Bot):
         #ollama_message = await self.ollama_client.ollama_chat_test()
 
     async def on_voice_state_update(self, member, before, after):
-        #if not before.channel and after.channel:
-        #    if self.user not in after.channel.members:
-                #await self.get_vc()
-                #self.vc.start_recording(
-                #    discord.sinks.WaveSink(),  # The sink type to use.
-                #    once_done,  # What to do once done.
-                #    after.channel  # The channel to disconnect from.
-                #)
-                #time.sleep(5)
-        #        pass
-                #self.vc.stop_recording()
-        #if member == self.user and not after.channel:
-        #    self.vc = None
-        #    del self.connections[self.guild.id]
-        pass
+        if member == self.user and after.channel is None:
+            if self.guild_id in self.connections:
+                del self.connections[self.guild_id]
+                self.vc = None
+                if self.check_activity_task.is_running():
+                    self.check_activity_task.stop()
+                if self.check_inactivity_task.is_running():
+                    self.check_inactivity_task.stop()
 
     async def get_vc(self):
-        if self.guild.id not in self.connections:
+        if self.guild_id not in self.connections:
             vc = await self.channel.connect(cls=voice_recv.VoiceRecvClient)  # Connect to the voice channel the author is in.
-            self.connections.update({self.guild.id: vc})  # Updating the cache with the guild and channel.
+            self.connections.update({self.guild_id: vc})  # Updating the cache with the guild and channel.
         else:
-            vc = self.connections[self.guild.id]
+            vc = self.connections[self.guild_id]
 
         self.vc = vc
+        if not self.check_activity_task.is_running():
+            self.check_activity_task.start()
         return vc
 
     def test_send(self):
         print("test")
 
     async def record(self):
-        vc = await self.get_vc()
+        await self.get_vc()
         audio_file_path = os.path.join(audio_directory, "recording.wav")
 
         if len(self.vc.channel.members) > 1 and self.user in self.vc.channel.members:
@@ -85,7 +80,10 @@ class DiscordClient(commands.Bot):
                     self.vc.listen(audio_sink)
                 else:
                     return
-                self.check_inactivity_task.start()
+                if self.check_activity_task.is_running():
+                    self.check_activity_task.stop()
+                if not self.check_inactivity_task.is_running():
+                    self.check_inactivity_task.start()
             except Exception as e:
                 print(e)
         else:
@@ -97,17 +95,34 @@ class DiscordClient(commands.Bot):
         current_time = asyncio.get_event_loop().time()
 
         for member in self.vc.channel.members:
+            if member == self.user:
+                continue
             if self.vc.get_speaking(member):
                 self.last_activity = current_time
                 return
 
         if self.last_activity and (current_time - self.last_activity > 1.0):
             self.vc.stop_listening()
-            await self.text_channel.send("stopped recording.")
-            # if os.path.exists(audio_file_path):
-            #    await self.text_channel.send(file=discord.File(audio_file_path))
+            #await self.text_channel.send("stopped recording.")
+            if os.path.exists(audio_file_path):
+                await self.text_channel.send(file=discord.File(audio_file_path))
             self.check_inactivity_task.stop()
             self.last_activity = None
+            self.check_activity_task.start()
+
+    @tasks.loop(seconds=0.1)
+    async def check_activity_task(self):
+        if self.vc is None:
+            return
+
+        if len(self.vc.channel.members) > 1:
+            for member in self.vc.channel.members:
+                if member == self.user:
+                    continue
+
+                if not self.vc.is_listening():
+                    await self.record()
+
 
 bot_intents = discord.Intents.default()
 bot_intents.members = True
@@ -121,7 +136,7 @@ discord_client = DiscordClient(command_prefix='!', intents=bot_intents)
 @discord_client.command()
 async def join(ctx):
     vc = await discord_client.get_vc()
-    await ctx.send(f"Connected to voice chat: {vc.channel}")
+    #await ctx.send(f"Connected to voice chat: {vc.channel}")
 
 @discord_client.command()
 async def record(ctx):
@@ -132,20 +147,20 @@ async def record(ctx):
 
 @discord_client.command(name="stop")
 async def stop_recording(ctx):
-    if ctx.guild.id in discord_client.connections:  # Check if the guild is in the cache.
-        vc = discord_client.connections[ctx.guild.id]
-        vc.stop_recording()  # Stop recording, and call the callback (once_done).
-        # del connections[ctx.guild.id]  # Remove the guild from the cache.
-        # await ctx.delete()  # And delete.
+    if discord_client.vc is not None and discord_client.vc.is_listening():
+        discord_client.vc.stop_listening()
+        discord_client.check_inactivity_task.stop()
+        #discord_client.check_activity_task.start()
     else:
         await ctx.respond("I am currently not recording here.")  # Respond with this if we aren't recording.
 
 @discord_client.command()
 async def leave(ctx):
-    if ctx.guild.id in discord_client.connections:  # Check if the guild is in the cache.
-        #del connections[ctx.guild.id]  # Remove the guild from the cache.
-        # await ctx.delete()  # And delete.
+    if discord_client.vc is not None:
+        del discord_client.connections[ctx.guild.id]  # Remove the guild from the cache.
+        discord_client.vc = None
         await ctx.voice_client.disconnect()
+        discord_client.check_inactivity_task.stop()
     else:
         await ctx.respond("I am currently not recording here.")  # Respond with this if we aren't recording.
 

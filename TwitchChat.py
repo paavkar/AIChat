@@ -33,6 +33,10 @@ class TwitchChat(commands.Bot):
         print("We got a message from this person: " + message.author.name)
         print("Their message was " + message.content)
 
-def start_twitch_bot():
+async def start_twitch_bot():
     twitch_bot = TwitchChat()
-    twitch_bot.run()
+    await twitch_bot.start()
+
+if __name__ == '__main__':
+    twitch_bot = TwitchChat()
+    asyncio.run(twitch_bot.start())

@@ -21,17 +21,20 @@ class DiscordClient(commands.Bot):
         self.ollama_client = None
         self.connections = {}
         self.last_activity = None
+        self.audio_file_path = None
 
     async def on_ready(self):
         self.guild_id = int(os.getenv('DISCORD_GUILD'))
         self.guild = self.get_guild(self.guild_id)
+        self.ollama_client = OllamaClient()
+        os.makedirs(audio_directory, exist_ok=True)
         self.channel = discord.utils.get(self.guild.channels, name="General")
         self.text_channel = discord.utils.get(self.guild.channels, name="general")
+        self.audio_file_path = os.path.join(audio_directory, "recording.wav")
+
         print(f'Logged on as {self.user}!')
 
         #self.vc = await self.get_vc()
-        self.ollama_client = OllamaClient()
-        os.makedirs(audio_directory, exist_ok=True)
 
     async def on_message(self, message):
         if message.author == self.user:
@@ -64,24 +67,28 @@ class DiscordClient(commands.Bot):
         self.vc = vc
         if not self.check_activity_task.is_running():
             self.check_activity_task.start()
+
+        #self.play_audio()
+
         return vc
 
     def test_send(self):
         print("test")
 
     async def record(self):
-        await self.get_vc()
-        audio_file_path = os.path.join(audio_directory, "recording.wav")
+        if self.vc is None:
+            await self.get_vc()
 
         if len(self.vc.channel.members) > 1 and self.user in self.vc.channel.members:
             try:
-                audio_sink = voice_recv.WaveSink(audio_file_path)
+                audio_sink = voice_recv.WaveSink(self.audio_file_path)
                 if not self.vc.is_listening():
                     self.vc.listen(audio_sink)
                 else:
                     return
                 if self.check_activity_task.is_running():
                     self.check_activity_task.stop()
+
                 if not self.check_inactivity_task.is_running():
                     self.check_inactivity_task.start()
             except Exception as e:
@@ -91,21 +98,28 @@ class DiscordClient(commands.Bot):
 
     @tasks.loop(seconds=0.1)
     async def check_inactivity_task(self):
-        audio_file_path = os.path.join(audio_directory, "recording.wav")
+        if self.vc is None:
+            return
+
+        if self.vc.is_playing():
+            return
+
         current_time = asyncio.get_event_loop().time()
 
         for member in self.vc.channel.members:
             if member == self.user:
                 continue
+
             if self.vc.get_speaking(member):
                 self.last_activity = current_time
                 return
 
         if self.last_activity and (current_time - self.last_activity > 1.0):
             self.vc.stop_listening()
-            #await self.text_channel.send("stopped recording.")
-            if os.path.exists(audio_file_path):
-                await self.text_channel.send(file=discord.File(audio_file_path))
+
+            if os.path.exists(self.audio_file_path):
+                await self.text_channel.send(file=discord.File(self.audio_file_path))
+
             self.check_inactivity_task.stop()
             self.last_activity = None
             self.check_activity_task.start()
@@ -113,6 +127,9 @@ class DiscordClient(commands.Bot):
     @tasks.loop(seconds=0.1)
     async def check_activity_task(self):
         if self.vc is None:
+            return
+
+        if self.vc.is_playing():
             return
 
         if len(self.vc.channel.members) > 1:
@@ -123,14 +140,26 @@ class DiscordClient(commands.Bot):
                 if not self.vc.is_listening():
                     await self.record()
 
+    #@tasks.loop(seconds=0.1)
+    def play_audio(self):
+        if self.vc is None:
+            return
+
+        if self.vc.is_listening():
+            return
+
+        if not self.vc.is_playing():
+            audio_source = discord.FFmpegPCMAudio(self.audio_file_path)
+            self.vc.play(audio_source)
+        while self.vc.is_playing():
+            time.sleep(0.1)
+
 
 bot_intents = discord.Intents.default()
 bot_intents.members = True
 bot_intents.message_content = True
 bot_intents.voice_states = True
 
-#client = discord.Bot(intents=intents)
-#client = commands.Bot(command_prefix='!', intents=intents)
 discord_client = DiscordClient(command_prefix='!', intents=bot_intents)
 
 @discord_client.command()
@@ -165,4 +194,7 @@ async def leave(ctx):
         await ctx.respond("I am currently not recording here.")  # Respond with this if we aren't recording.
 
 def start_discord_bot():
+    discord_client.run(os.getenv("DISCORD_TOKEN"))
+
+if __name__ == '__main__':
     discord_client.run(os.getenv("DISCORD_TOKEN"))

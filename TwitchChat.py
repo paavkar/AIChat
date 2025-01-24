@@ -39,4 +39,4 @@ async def start_twitch_bot():
 
 if __name__ == '__main__':
     twitch_bot = TwitchChat()
-    asyncio.run(twitch_bot.start())
+    twitch_bot.run()

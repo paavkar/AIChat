@@ -5,8 +5,10 @@ soundfile
 pygame
 mutagen
 pydub
-gtts
+#gtts
 discord.py[voice]
 discord-ext-voice-recv
 #py-cord[voice]
 python-dotenv
+coqui-tts
+torch

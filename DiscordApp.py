@@ -101,8 +101,8 @@ class DiscordClient(commands.Bot):
         if self.vc is None:
             return
 
-        if self.vc.is_playing():
-            return
+        #if self.vc.is_playing():
+        #    return
 
         current_time = asyncio.get_event_loop().time()
 
@@ -129,8 +129,8 @@ class DiscordClient(commands.Bot):
         if self.vc is None:
             return
 
-        if self.vc.is_playing():
-            return
+        #if self.vc.is_playing():
+        #    return
 
         if len(self.vc.channel.members) > 1:
             for member in self.vc.channel.members:
@@ -145,8 +145,8 @@ class DiscordClient(commands.Bot):
         if self.vc is None:
             return
 
-        if self.vc.is_listening():
-            return
+        #if self.vc.is_listening():
+        #    return
 
         if not self.vc.is_playing():
             audio_source = discord.FFmpegPCMAudio(self.audio_file_path)

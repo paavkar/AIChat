@@ -12,3 +12,5 @@ discord-ext-voice-recv
 python-dotenv
 coqui-tts
 torch
+numpy
+scipy

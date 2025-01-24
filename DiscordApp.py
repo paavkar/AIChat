@@ -4,14 +4,21 @@ from discord.ext import commands, voice_recv, tasks
 import os
 import dotenv
 import asyncio
+import numpy as np
+from scipy.io.wavfile import write
 
 from OllamaChat import OllamaClient
+from TextToSpeech import TTSManager
+from constants import audio_to_play_directory as audio_directory, recorded_audio_directory
 
 dotenv.load_dotenv()
-audio_directory = "dc_audio"
 
 class DiscordClient(commands.Bot):
-    def __init__(self, command_prefix, intents):
+    def __init__(self, command_prefix):
+        intents = discord.Intents.default()
+        intents.members = True
+        intents.message_content = True
+        intents.voice_states = True
         super().__init__(command_prefix=command_prefix, intents=intents)
         self.vc = None
         self.text_channel = None
@@ -22,6 +29,8 @@ class DiscordClient(commands.Bot):
         self.connections = {}
         self.last_activity = None
         self.audio_file_path = None
+        self.recording_file_path = None
+        self.tts_manager = None
 
     async def on_ready(self):
         self.guild_id = int(os.getenv('DISCORD_GUILD'))
@@ -30,11 +39,13 @@ class DiscordClient(commands.Bot):
         os.makedirs(audio_directory, exist_ok=True)
         self.channel = discord.utils.get(self.guild.channels, name="General")
         self.text_channel = discord.utils.get(self.guild.channels, name="general")
-        self.audio_file_path = os.path.join(audio_directory, "recording.wav")
+        self.audio_file_path = os.path.join(audio_directory, "output.wav")
+        self.recording_file_path = os.path.join(recorded_audio_directory, "recording.wav")
+        self.tts_manager = TTSManager()
 
         print(f'Logged on as {self.user}!')
 
-        #self.vc = await self.get_vc()
+        await self.get_vc()
 
     async def on_message(self, message):
         if message.author == self.user:
@@ -65,10 +76,11 @@ class DiscordClient(commands.Bot):
             vc = self.connections[self.guild_id]
 
         self.vc = vc
-        if not self.check_activity_task.is_running():
-            self.check_activity_task.start()
+        #if not self.check_activity_task.is_running():
+        #    self.check_activity_task.start()
 
-        #self.play_audio()
+        # playing audio when joining the vc doesn't work
+        #self.play_audio(self.audio_file_path)
 
         return vc
 
@@ -81,7 +93,7 @@ class DiscordClient(commands.Bot):
 
         if len(self.vc.channel.members) > 1 and self.user in self.vc.channel.members:
             try:
-                audio_sink = voice_recv.WaveSink(self.audio_file_path)
+                audio_sink = voice_recv.WaveSink(self.recording_file_path)
                 if not self.vc.is_listening():
                     self.vc.listen(audio_sink)
                 else:
@@ -101,8 +113,8 @@ class DiscordClient(commands.Bot):
         if self.vc is None:
             return
 
-        #if self.vc.is_playing():
-        #    return
+        if self.vc.is_playing():
+            return
 
         current_time = asyncio.get_event_loop().time()
 
@@ -117,20 +129,20 @@ class DiscordClient(commands.Bot):
         if self.last_activity and (current_time - self.last_activity > 1.0):
             self.vc.stop_listening()
 
-            if os.path.exists(self.audio_file_path):
-                await self.text_channel.send(file=discord.File(self.audio_file_path))
+            #if os.path.exists(self.recording_file_path):
+            #    await self.text_channel.send(file=discord.File(self.recording_file_path))
 
             self.check_inactivity_task.stop()
             self.last_activity = None
-            self.check_activity_task.start()
+            #self.check_activity_task.start()
 
     @tasks.loop(seconds=0.1)
     async def check_activity_task(self):
         if self.vc is None:
             return
 
-        #if self.vc.is_playing():
-        #    return
+        if self.vc.is_playing():
+            return
 
         if len(self.vc.channel.members) > 1:
             for member in self.vc.channel.members:
@@ -141,26 +153,29 @@ class DiscordClient(commands.Bot):
                     await self.record()
 
     #@tasks.loop(seconds=0.1)
-    def play_audio(self):
+    def play_audio(self, file_path):
         if self.vc is None:
             return
 
         #if self.vc.is_listening():
         #    return
 
+        #wav = self.tts_manager.text_to_audio()
+        #audio_data = np.array(wav, dtype=np.int16)
+        #sample_rate = 48000
+        #write(file_path, sample_rate, audio_data)
+
         if not self.vc.is_playing():
-            audio_source = discord.FFmpegPCMAudio(self.audio_file_path)
+            audio_source = discord.FFmpegPCMAudio(file_path)
             self.vc.play(audio_source)
         while self.vc.is_playing():
             time.sleep(0.1)
 
+discord_client = DiscordClient(command_prefix='!')
 
-bot_intents = discord.Intents.default()
-bot_intents.members = True
-bot_intents.message_content = True
-bot_intents.voice_states = True
-
-discord_client = DiscordClient(command_prefix='!', intents=bot_intents)
+@discord_client.command()
+async def play(ctx):
+    discord_client.play_audio(os.path.join("speech_output", "output.wav"))
 
 @discord_client.command()
 async def join(ctx):

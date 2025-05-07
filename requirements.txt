@@ -1,4 +1,3 @@
-twitchio
 keyboard
 ollama
 soundfile
@@ -6,11 +5,10 @@ pygame
 mutagen
 pydub
 #gtts
-discord.py[voice]
-discord-ext-voice-recv
-#py-cord[voice]
+py-cord[voice]
 python-dotenv
 coqui-tts
 torch
 numpy
 scipy
+flask

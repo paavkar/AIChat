@@ -2,102 +2,141 @@ import time
 import keyboard
 import os
 import dotenv
+import whisper
+import tempfile
+import io
+import asyncio
+from pydub import AudioSegment
 
 dotenv.load_dotenv()
 
 class SpeechToTextManager:
-    azure_speech = None
-    azure_audio = None
-    azure_speechrecogniser = None
-
     def __init__(self):
+        self.model = whisper.load_model("turbo")
+
+    def transcribe_audiofile(self, file_path):
+        # Transcribe the audio file.
+        # The transcribe function returns a dictionary containing the transcription and extra info.
+        result = self.model.transcribe(file_path)
+
+        # Return the transcribed text.
+        return result["text"]
+
+    async def transcribe_audiostream(self, audio_stream: io.BytesIO, model) -> str:
+        """
+        Given an io.BytesIO stream (containing WAV audio), writes the stream
+        to a temporary file and transcribes it using the provided Whisper model.
+        Returns the transcribed text.
+        """
+        # Use a temporary file to interface with Whisper.
+        fd, temp_path = tempfile.mkstemp(suffix=".wav")
         try:
-            pass
-            #self.azure_speech = speechsdk.SpeechConfig(subscription=os.getenv('AZURE_TTS_KEY'),
-            #                                           region=os.getenv('AZURE_TTS_REGION'))
-        except TypeError:
-            exit("Environment variables not set")
+            # Write the BytesIO data to the temporary file.
+            with os.fdopen(fd, "wb") as f:
+                audio_stream.seek(0)
+                data = audio_stream.read()
+                f.write(data)
 
-    def speechtotext_from_mic(self):
+            loop = asyncio.get_running_loop()
+            # Call the Whisper transcription in an executor to avoid blocking.
+            result = await loop.run_in_executor(None, model.transcribe, temp_path)
+            transcription = result.get("text", "").strip()
 
-        #self.azure_audio = speechsdk.audio.AudioConfig(use_default_microphone=True)
-        #self.azure_speechrecogniser = speechsdk.SpeechRecognizer(speech_config=self.azure_speech,
-        #                                                         audio_config=self.azure_audio)
+        finally:
+            # Remove the temporary file.
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
-        print("Speak into your microphone.")
-        speech_recognition_result = self.azure_speechrecogniser.recognize_once_async().get()
-        text_result = speech_recognition_result.text
+        return transcription
 
-        #if speech_recognition_result.reason == speechsdk.ResultReason.RecognizedSpeech:
-        #    print("Recognized: {}".format(speech_recognition_result.text))
-        #elif speech_recognition_result.reason == speechsdk.ResultReason.NoMatch:
-        #    print("No speech could be recognized: {}".format(speech_recognition_result.no_match_details))
-        #elif speech_recognition_result.reason == speechsdk.ResultReason.Canceled:
-        #    cancellation_details = speech_recognition_result.cancellation_details
-        #    print("Speech Recognition canceled: {}".format(cancellation_details.reason))
-        #    if cancellation_details.reason == speechsdk.CancellationReason.Error:
-        #        print("Error details: {}".format(cancellation_details.error_details))
-        #        print("Did you set the speech resource key and region values?")
+    async def process_transcriptions(self, sink_obj) -> str:
+        """
+        Sorts the logged audio chunks by timestamp, transcribes each one using Whisper,
+        and returns a combined string with one line per utterance containing the timestamp,
+        user info, and the transcribed speech.
+        """
+        # Ensure utterances are in chronological order.
+        sorted_utterances = sorted(sink_obj.utterances, key=lambda x: x[0])
 
-        print(f"We got the following text: {text_result}")
-        return text_result
+        merged_utterances = []
+        merge_threshold = 1.0  # If gap between utterances is < 0.5 seconds, consider merging.
+        max_merge_duration = 10.0
+        current_merge = None  # will contain [timestamp, user_id, merged_data]
 
-    def speechtotext_from_mic_continuous(self, stop_key='p'):
-        #self.azure_speechrecogniser = speechsdk.SpeechRecognizer(speech_config=self.azure_speech,
-        #                                                         audio_config=self.azure_audio)
+        for timestamp, user_id, data in sorted_utterances:
+            if not isinstance(data, bytes):
+                print(data)
+                continue  # Skip invalid data.
 
-        done = False
+            try:
+                segment = AudioSegment.from_file(io.BytesIO(data), format="wav")
+            except Exception as e:
+                # If that fails, assume the data is raw PCM.
+                try:
+                    # Adjust these parameters based on how your audio data is recorded.
+                    segment = AudioSegment.from_raw(io.BytesIO(data), sample_width=2, frame_rate=48000, channels=2)
+                except Exception as e2:
+                    print(f"Error parsing audio segment for user {user_id}: {e2}")
+                    continue
 
-        # Optional callback to print out whenever a chunk of speech is being recognized.
-        # This gets called basically every word.
-        # def recognizing_cb(evt: speechsdk.SpeechRecognitionEventArgs):
-        #    print('RECOGNIZING: {}'.format(evt))
-        # self.azure_speechrecogniser.recognizing.connect(recognizing_cb)
+            if current_merge is None:
+                # Start a new merge segment.
+                current_merge = {
+                    "start": timestamp,
+                    "end": timestamp,
+                    "user": user_id,
+                    "segment": segment
+                }
+            else:
+                # If it's the same speaker, try to merge.
+                if user_id == current_merge["user"]:
+                    gap = timestamp - current_merge["end"]
+                    overall_duration = timestamp - current_merge["start"]
+                    # Check if the gap is small enough and overall duration is within our limit:
+                    if gap < merge_threshold and overall_duration < max_merge_duration:
+                        # Merge the current utterance.
+                        current_merge["end"] = timestamp
+                        current_merge["segment"] += segment
+                    else:
+                        # Either the gap is too large or the merged segment becomes too long.
+                        merged_utterances.append(
+                            (current_merge["end"], current_merge["user"], current_merge["segment"])
+                        )
+                        # Start a new merge segment.
+                        current_merge = {
+                            "start": timestamp,
+                            "end": timestamp,
+                            "user": user_id,
+                            "segment": segment
+                        }
+                else:
+                    # Different speaker: always finalize the current merge and start a new one.
+                    merged_utterances.append(
+                        (current_merge["end"], current_merge["user"], current_merge["segment"])
+                    )
+                    current_merge = {
+                        "start": timestamp,
+                        "end": timestamp,
+                        "user": user_id,
+                        "segment": segment
+                    }
+        if current_merge is not None:
+            merged_utterances.append(
+                (current_merge["end"], current_merge["user"], current_merge["segment"])
+            )
 
-        # Optional callback to print out whenever a chunk of speech is finished being recognized.
-        # Make sure to let this finish before ending the speech recognition.
-        #def recognized_cb(evt: speechsdk.SpeechRecognitionEventArgs):
-        #    print('RECOGNIZED: {}'.format(evt))
+        full_transcription = ""
+        for timestamp, user_id, segment in merged_utterances:
+            # Wrap the raw audio data in a BytesIO object.
+            buf = io.BytesIO()
+            segment.export(buf, format="wav")
+            # Ensure the buffer is positioned at the start.
+            buf.seek(0)
+            # Transcribe the audio data using the helper.
+            transcription = await self.transcribe_audiostream(buf, self.model)
+            # Format the timestamp (HH:MM:SS).
+            ts_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
+            # Append to the full transcription with a user label.
+            full_transcription += f"[{ts_str}] <@{user_id}>: {transcription}\n"
 
-        #self.azure_speechrecogniser.recognized.connect(recognized_cb)
-
-        # We register this to fire if we get a session_stopped or cancelled event.
-        #def stop_cb(evt: speechsdk.SessionEventArgs):
-        #    print('CLOSING speech recognition on {}'.format(evt))
-        #    nonlocal done
-        #    done = True
-
-        # Connect callbacks to the events fired by the speech recognizer
-        #self.azure_speechrecogniser.session_stopped.connect(stop_cb)
-        #self.azure_speechrecogniser.canceled.connect(stop_cb)
-
-        # This is where we compile the results we receive from the ongoing "Recognized" events
-        all_results = []
-
-        def handle_final_result(evt):
-            all_results.append(evt.result.text)
-
-        #self.azure_speechrecogniser.recognized.connect(handle_final_result)
-
-        # Perform recognition. `start_continuous_recognition_async asynchronously initiates continuous recognition operation,
-        # Other tasks can be performed on this thread while recognition starts...
-        # wait on result_future.get() to know when initialization is done.
-        # Call stop_continuous_recognition_async() to stop recognition.
-        result_future = self.azure_speechrecogniser.start_continuous_recognition_async()
-        result_future.get()  # wait for voidfuture, so we know engine initialization is done.
-        print('Continuous Speech Recognition is now running, say something.')
-
-        while not done:
-            # METHOD 1 - Press the stop key. This is 'p' by default but user can provide different key
-            if keyboard.read_key() == stop_key:
-                print("\nEnding azure speech recognition\n")
-                #self.azure_speechrecogniser.stop_continuous_recognition_async()
-                break
-            # Other methods: https://stackoverflow.com/a/57644349
-
-            # No real sample parallel work to do on this thread, so just wait for user to give the signal to stop.
-            # Can't exit function or speech_recognizer will go out of scope and be destroyed while running.
-
-        final_result = " ".join(all_results).strip()
-        print(f"\n\nHere's the result we got!\n\n{final_result}\n\n")
-        return final_result
+        return full_transcription

@@ -1,5 +1,2 @@
 .env
-./venv
-./venv1
-./dc_audio
-./speech_output
+*.wav

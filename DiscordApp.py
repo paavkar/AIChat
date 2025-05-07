@@ -52,16 +52,17 @@ class DiscordClient(discord.Bot):
         self.recording_file_path = None
         self.tts_manager = None
         self.segment_event = None
+        self.id_to_display_name = {}
         self.stt = SpeechToTextManager()
 
     async def on_ready(self):
         self.guild_id = int(os.getenv('DISCORD_GUILD'))
-        self.guild = self.get_guild(self.guild_id)
+        self.guild: discord.Guild = self.get_guild(self.guild_id)
         # self.ollama_client = OllamaClient()
         os.makedirs(audio_directory, exist_ok=True)
         os.makedirs(recorded_audio_directory, exist_ok=True)
-        self.channel = discord.utils.get(self.guild.channels, name="General")
-        self.text_channel = discord.utils.get(self.guild.channels, name="general")
+        self.channel: discord.VoiceChannel = discord.utils.get(self.guild.channels, name="General")
+        self.text_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="general")
         self.audio_file_path = os.path.join(audio_directory, "output.wav")
         # self.tts_manager = TTSManager()
 
@@ -69,30 +70,30 @@ class DiscordClient(discord.Bot):
 
         await self.get_vc()
 
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message):
         if message.author == self.user:
             return
-        #print(f'Message from {message.author}: {message.content}')
-        #print(self.text_channel)
+        print(f'Message from {message.author}: {message.content}')
+        print(f"Message was sent in {message.channel}")
 
         #await self.process_commands(message)
 
         # an example of using ollama
         #ollama_message = await self.ollama_client.ollama_chat_test()
 
-    async def on_voice_state_update(self, member, before, after):
-        if after.channel is None:
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        if before.channel is not None and after.channel is None:
             message = f"{member.display_name} left the vc."
             await self.channel.send(message)
 
     async def get_vc(self):
         if self.guild_id not in self.connections:
-            vc = await self.channel.connect()  # Connect to the voice channel the author is in.
+            vc: discord.VoiceClient = await self.channel.connect()  # Connect to the voice channel specified
             self.connections.update({self.guild_id: vc})  # Updating the cache with the guild and channel.
         else:
             vc = self.connections[self.guild_id]
 
-        self.vc = vc
+        self.vc: discord.VoiceClient = vc
 
         while vc.is_connected():
             await self.record()
@@ -121,8 +122,26 @@ class DiscordClient(discord.Bot):
         # A short delay before starting the next recording session.
         await asyncio.sleep(0.5)
 
+    async def convert_utterances_usernames(self, sink: AutoRecordSink):
+        """Converts stored user IDs in utterances to usernames (or display names)."""
+        new_utterances = []
+        for timestamp, user_id, data in sink.utterances:
+            try:
+                if user_id in self.id_to_display_name.keys():
+                    username = self.id_to_display_name[user_id]
+                else:
+                    user_obj = await self.fetch_user(int(user_id))
+                    username = user_obj.display_name
+                    self.id_to_display_name[user_id] = user_obj.display_name
+            except Exception as e:
+                print(f"Error retrieving user {user_id}: {e}")
+                username = str(user_id)  # fallback in case of an error
+            new_utterances.append((timestamp, username, data))
+        sink.utterances = new_utterances
+
     # Callback once recording stops (i.e. when silence is detected)
     async def segment_callback(self, sink_obj: AutoRecordSink, text_channel: discord.TextChannel):
+        await self.convert_utterances_usernames(sink_obj)
         # Process the recorded data only if some audio was captured.
         if sink_obj.audio_data:
             # Format a list of users for whom audio was recorded.
@@ -130,13 +149,14 @@ class DiscordClient(discord.Bot):
             files = []
 
             for user_id, audio in sink_obj.audio_data.items():
+                display_name = self.id_to_display_name[user_id]
                 # Extract the entire content from the BytesIO buffer.
                 audio.file.seek(0)
                 data = audio.file.read()
                 date = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
                 # Save the data to disk with your desired filename.
-                disk_filename = f"{date}-recording_{user_id}.{sink_obj.encoding}"
+                disk_filename = f"{date}-recording_{display_name}.{sink_obj.encoding}"
                 self.recording_file_path = os.path.join(recorded_audio_directory, disk_filename)
                 with open(self.recording_file_path, "wb") as f:
                     f.write(data)
@@ -145,7 +165,7 @@ class DiscordClient(discord.Bot):
                 # Create a new BytesIO object for the Discord file,
                 # ensuring it starts from the beginning.
                 new_file_stream = io.BytesIO(data)
-                discord_file = discord.File(new_file_stream, filename=f"{user_id}.{sink_obj.encoding}")
+                discord_file = discord.File(new_file_stream, filename=f"{display_name}.{sink_obj.encoding}")
                 files.append(discord_file)
 
             await text_channel.send(
@@ -155,7 +175,7 @@ class DiscordClient(discord.Bot):
             transcription = self.stt.transcribe_audiofile(self.recording_file_path)
             print(transcription)
         else:
-            print("Silence segment, no data recorded.")
+            print(f"[{time.strftime("%H:%M:%S", time.localtime(time.time()))}] Silence segment, no data recorded.")
         if sink_obj.utterances:
             combined_text = await self.stt.process_transcriptions(sink_obj)
             # await text_channel.send(f"Combined transcription:\n{combined_text}")

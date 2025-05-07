@@ -1,5 +1,4 @@
 import time
-import keyboard
 import os
 import dotenv
 import whisper
@@ -17,7 +16,7 @@ class SpeechToTextManager:
     def transcribe_audiofile(self, file_path):
         # Transcribe the audio file.
         # The transcribe function returns a dictionary containing the transcription and extra info.
-        result = self.model.transcribe(file_path)
+        result = self.model.transcribe(audio=file_path)
 
         # Return the transcribed text.
         return result["text"]
@@ -59,11 +58,11 @@ class SpeechToTextManager:
         sorted_utterances = sorted(sink_obj.utterances, key=lambda x: x[0])
 
         merged_utterances = []
-        merge_threshold = 1.0  # If gap between utterances is < 0.5 seconds, consider merging.
+        merge_threshold = 1.0
         max_merge_duration = 10.0
         current_merge = None  # will contain [timestamp, user_id, merged_data]
 
-        for timestamp, user_id, data in sorted_utterances:
+        for timestamp, user, data in sorted_utterances:
             if not isinstance(data, bytes):
                 print(data)
                 continue  # Skip invalid data.
@@ -76,7 +75,7 @@ class SpeechToTextManager:
                     # Adjust these parameters based on how your audio data is recorded.
                     segment = AudioSegment.from_raw(io.BytesIO(data), sample_width=2, frame_rate=48000, channels=2)
                 except Exception as e2:
-                    print(f"Error parsing audio segment for user {user_id}: {e2}")
+                    print(f"Error parsing audio segment for user {user}: {e2}")
                     continue
 
             if current_merge is None:
@@ -84,12 +83,12 @@ class SpeechToTextManager:
                 current_merge = {
                     "start": timestamp,
                     "end": timestamp,
-                    "user": user_id,
+                    "user": user,
                     "segment": segment
                 }
             else:
                 # If it's the same speaker, try to merge.
-                if user_id == current_merge["user"]:
+                if user == current_merge["user"]:
                     gap = timestamp - current_merge["end"]
                     overall_duration = timestamp - current_merge["start"]
                     # Check if the gap is small enough and overall duration is within our limit:
@@ -106,7 +105,7 @@ class SpeechToTextManager:
                         current_merge = {
                             "start": timestamp,
                             "end": timestamp,
-                            "user": user_id,
+                            "user": user,
                             "segment": segment
                         }
                 else:
@@ -117,7 +116,7 @@ class SpeechToTextManager:
                     current_merge = {
                         "start": timestamp,
                         "end": timestamp,
-                        "user": user_id,
+                        "user": user,
                         "segment": segment
                     }
         if current_merge is not None:
@@ -126,7 +125,7 @@ class SpeechToTextManager:
             )
 
         full_transcription = ""
-        for timestamp, user_id, segment in merged_utterances:
+        for timestamp, user, segment in merged_utterances:
             # Wrap the raw audio data in a BytesIO object.
             buf = io.BytesIO()
             segment.export(buf, format="wav")
@@ -137,6 +136,6 @@ class SpeechToTextManager:
             # Format the timestamp (HH:MM:SS).
             ts_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
             # Append to the full transcription with a user label.
-            full_transcription += f"[{ts_str}] <@{user_id}>: {transcription}\n"
+            full_transcription += f"[{ts_str}] {user}: {transcription}\n"
 
         return full_transcription

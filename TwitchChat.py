@@ -39,7 +39,6 @@ class TwitchApp(commands.Bot):
             prefix="?")
         #self.tts_manager = TTSManager()
         #self.audio_player = AudioManager()
-        self.redis_url = "redis://localhost"
         self.config = {}
         self.channel = None
         self.redis_conn = redis.Redis(host="localhost", port=6379, db=0)

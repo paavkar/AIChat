@@ -1,19 +1,32 @@
 import discord
+from discord.ext import commands
 import os
 import dotenv
 import asyncio
 import io
 import datetime
 import time
-import tempfile
-import whisper
+import redis.asyncio as redis
+import json
+import logging
 
 # from OllamaChat import OllamaClient
 # from TextToSpeech import TTSManager
 from SpeechToText import SpeechToTextManager
-from constants import audio_to_play_directory as audio_directory, recorded_audio_directory
+from constants import audio_to_play_directory as audio_directory, recorded_audio_directory, transcriptions_directory, BOT_CONFIG_KEY
 
 dotenv.load_dotenv()
+LOGGER: logging.Logger = logging.getLogger("DiscordClient")
+
+logging.basicConfig(
+    level=logging.INFO,  # Adjust this level (DEBUG, INFO, etc.) as needed
+    format='%(asctime)s:%(levelname)s:%(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler(),  # Outputs to the console
+        #logging.FileHandler('discord.log', encoding='utf-8', mode='w')  # Outputs to a log file
+    ]
+)
+
 
 class AutoRecordSink(discord.sinks.WaveSink):
     def __init__(self):
@@ -37,12 +50,13 @@ async def monitor_silence(vc: discord.VoiceClient, sink: AutoRecordSink):
             vc.stop_recording()  # this triggers the segment callback below
             break
 
-class DiscordClient(discord.Bot):
+class DiscordClient(commands.Bot):
     def __init__(self, command_prefix):
         super().__init__(command_prefix=command_prefix, intents=discord.Intents.all())
         self.vc = None
         self.text_channel = None
         self.channel = None
+        self.logs_channel = None
         self.guild = None
         self.guild_id = None
         self.ollama_client = None
@@ -54,19 +68,41 @@ class DiscordClient(discord.Bot):
         self.segment_event = None
         self.id_to_display_name = {}
         self.stt = SpeechToTextManager()
+        self.redis_conn = redis.Redis(host="localhost", port=6379, db=0)
+        self.config = {}
+        self.username_to_id = {}
 
     async def on_ready(self):
+        config_data = await self.redis_conn.get(BOT_CONFIG_KEY)
+        if config_data:
+            self.config = json.loads(config_data)
+        else:
+            # Set default values if no configuration exists.
+            self.config = {
+                "timeout_duration": 600,
+                "discord_actions_enabled": True,
+                "handle_twitch_events": True,
+                "dc_invite_link": True
+            }
+            await self.redis_conn.set(BOT_CONFIG_KEY, json.dumps(self.config))
         self.guild_id = int(os.getenv('DISCORD_GUILD'))
         self.guild: discord.Guild = self.get_guild(self.guild_id)
         # self.ollama_client = OllamaClient()
         os.makedirs(audio_directory, exist_ok=True)
         os.makedirs(recorded_audio_directory, exist_ok=True)
+        os.makedirs(transcriptions_directory, exist_ok=True)
         self.channel: discord.VoiceChannel = discord.utils.get(self.guild.channels, name="General")
         self.text_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="general")
+        self.logs_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="logs")
         self.audio_file_path = os.path.join(audio_directory, "output.wav")
         # self.tts_manager = TTSManager()
 
-        print(f'Logged on as {self.user}!')
+        for member in self.guild.members:
+            self.username_to_id[member.display_name] = member.id
+
+        asyncio.create_task(self.listen_for_config_updates())
+        LOGGER.info(f'Logged on as {self.user}!')
+        LOGGER.info(f"User id: {self.user.id}")
 
         await self.get_vc()
 
@@ -81,10 +117,45 @@ class DiscordClient(discord.Bot):
         # an example of using ollama
         #ollama_message = await self.ollama_client.ollama_chat_test()
 
+    async def listen_for_config_updates(self):
+        pubsub = self.redis_conn.pubsub()
+        await pubsub.subscribe("config_updates")
+        while True:
+            message = await pubsub.get_message(ignore_subscribe_messages=True)
+            if message and message["data"]:
+                try:
+                    new_config = json.loads(message["data"])
+                    # Update local configuration. You might merge dictionaries.
+                    self.config.update(new_config)
+                    LOGGER.info("Configuration updated:", self.config)
+                except Exception as e:
+                    LOGGER.error("Failed to process config update:", e)
+            await asyncio.sleep(1)
+
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         if before.channel is not None and after.channel is None:
-            message = f"{member.display_name} left the vc."
-            await self.channel.send(message)
+            message = f"{member.display_name} left the vc: {before.channel.name}."
+            await self.logs_channel.send(message)
+            LOGGER.debug(f"after.channel: {after.channel}")
+
+        update_config = False
+        if after.channel is not None and len(after.channel.members) > 1:
+            self.config["handle_twitch_events"] = False
+            update_config = True
+        elif before.channel is not None and len(before.channel.members) < 2:
+            self.config["handle_twitch_events"] = True
+            update_config = True
+        if before.channel is None and after.channel is not None and len(after.channel.members) < 2:
+            self.config["handle_twitch_events"] = True
+            update_config = True
+
+        if update_config:
+            config_json = json.dumps(self.config)
+            await self.redis_conn.set(BOT_CONFIG_KEY, config_json)
+            # Publish to the config_updates channel.
+            await self.redis_conn.publish("config_updates", config_json)
+            message = f"Updated config: {config_json}"
+            await self.logs_channel.send(message)
 
     async def get_vc(self):
         if self.guild_id not in self.connections:
@@ -134,7 +205,7 @@ class DiscordClient(discord.Bot):
                     username = user_obj.display_name
                     self.id_to_display_name[user_id] = user_obj.display_name
             except Exception as e:
-                print(f"Error retrieving user {user_id}: {e}")
+                LOGGER.error(f"Error retrieving user {user_id}: {e}")
                 username = str(user_id)  # fallback in case of an error
             new_utterances.append((timestamp, username, data))
         sink.utterances = new_utterances
@@ -160,7 +231,7 @@ class DiscordClient(discord.Bot):
                 self.recording_file_path = os.path.join(recorded_audio_directory, disk_filename)
                 with open(self.recording_file_path, "wb") as f:
                     f.write(data)
-                print(f"Saved file to disk: {self.recording_file_path}")
+                LOGGER.info(f"Saved file to disk: {self.recording_file_path}")
 
                 # Create a new BytesIO object for the Discord file,
                 # ensuring it starts from the beginning.
@@ -168,23 +239,24 @@ class DiscordClient(discord.Bot):
                 discord_file = discord.File(new_file_stream, filename=f"{display_name}.{sink_obj.encoding}")
                 files.append(discord_file)
 
-            await text_channel.send(
+            await self.logs_channel.send(
                 f"Finished recording audio for: {', '.join(recorded_users)}",
                 files=files
             )
             transcription = self.stt.transcribe_audiofile(self.recording_file_path)
             print(transcription)
         else:
-            print(f"[{time.strftime("%H:%M:%S", time.localtime(time.time()))}] Silence segment, no data recorded.")
+            LOGGER.info(f"Silence segment, no data recorded.")
         if sink_obj.utterances:
             combined_text = await self.stt.process_transcriptions(sink_obj)
             # await text_channel.send(f"Combined transcription:\n{combined_text}")
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             filename = f"transcription_{timestamp}.txt"
+            file_path = os.path.join(transcriptions_directory, filename)
 
-            with open(filename, "w", encoding="utf-8") as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 f.write(combined_text)
-            print(f"[DEBUG] Saved transcription to file {filename}")
+            LOGGER.info(f"Saved transcription to file {file_path}")
 
         self.segment_event.set()  # signal that the segment is done
 
@@ -201,30 +273,62 @@ class DiscordClient(discord.Bot):
             await self.text_channel.respond(
                 "I am currently not recording here.")  # Respond with this if we aren't recording.
 
+    async def mod_timeout(self, target: str, *, reason: str = "Voice command"):
+        """
+        Sends a timeout command for a Twitch user.
+        """
+        command = {
+            "action": "timeout",
+            "target": target,
+            "reason": reason
+        }
+        await self.redis_conn.publish("mod_commands", json.dumps(command))
+        await self.logs_channel.send(f"Sent timeout command for {target}. Reason: {reason}")
+
+    async def mod_ban(self, target: str, *, reason: str = "Voice command"):
+        """
+        Sends a ban command for a Twitch user.
+        """
+        command = {
+            "action": "ban",
+            "target": target,
+            "reason": reason
+        }
+        await self.redis_conn.publish("mod_commands", json.dumps(command))
+        await self.logs_channel.send(f"Sent ban command for {target}")
+
+    async def dm_user(self, username: str, message: str):
+        user_id = self.username_to_id[username]
+        user = await self.get_or_fetch_user(user_id)
+        if self.config["dc_invite_link"]:
+            vc_invite = await self.channel.create_invite(max_age=3600, unique=True)
+            message += f"\nJoin {self.channel.name}: {vc_invite.url}"
+        try:
+            await user.send(message)
+        except discord.Forbidden:
+            LOGGER.error("Could not send the dm.")
+
 discord_client = DiscordClient(command_prefix='!')
 
 @discord_client.command()
-async def play(ctx):
+async def play(ctx: discord.ApplicationContext):
     await discord_client.play_audio(os.path.join("speech_output", "output.wav"))
 
 @discord_client.command()
-async def join(ctx):
+async def join(ctx: discord.ApplicationContext):
     vc = await discord_client.get_vc()
     #await ctx.send(f"Connected to voice chat: {vc.channel}")
 
 @discord_client.command()
-async def record(ctx):
+async def record(ctx: discord.ApplicationContext):
     await discord_client.record()
 
-    #if os.path.exists(audio_file_path):
-    #    await ctx.send(file=discord.File(audio_file_path))
-
 @discord_client.command(name="stop")
-async def stop_recording(ctx):
+async def stop_recording(ctx: discord.ApplicationContext):
     await discord_client.stop_record()
 
 @discord_client.command()
-async def leave(ctx):
+async def leave(ctx: discord.ApplicationContext):
     if discord_client.vc is not None:
         await discord_client.stop_record()
         discord_client.vc = None

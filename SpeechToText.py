@@ -124,6 +124,8 @@ class SpeechToTextManager:
                 (current_merge["end"], current_merge["user"], current_merge["segment"])
             )
 
+        print(f"[DEBUG] There are {len(merged_utterances)} utterances in total.")
+
         full_transcription = ""
         for timestamp, user, segment in merged_utterances:
             # Wrap the raw audio data in a BytesIO object.

@@ -243,12 +243,25 @@ class DiscordClient(commands.Bot):
             transcription = await asyncio.to_thread(
                 self.stt.transcribe_audiofile, self.recording_file_path
             )
+
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            filename = f"simple_transcription_{timestamp}.txt"
+            file_path = os.path.join(transcriptions_directory, filename)
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(transcription)
+
             message = f"Give a response to the following message: {transcription}"
             reply = await self.ollama_client.ollama_chat(message)
-            output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, reply)
-            await self.queue_audio(output_path)
-            print(transcription)
-            print(reply)
+
+            try:
+                result_dict = json.loads(reply)
+                output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, result_dict["result"])
+                await self.queue_audio(output_path)
+            except json.JSONDecodeError as error:
+                error_message = "There was an error creating a response."
+                output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, error_message)
+                await self.queue_audio(output_path)
         else:
             LOGGER.info(f"Silence segment, no data recorded.")
         # if sink_obj.utterances:

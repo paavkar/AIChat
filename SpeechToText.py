@@ -138,6 +138,6 @@ class SpeechToTextManager:
             # Format the timestamp (HH:MM:SS).
             ts_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
             # Append to the full transcription with a user label.
-            full_transcription += f"[{ts_str}] {user}: {transcription}\n"
+            full_transcription += f"[{ts_str}] <{user}>: {transcription}\n"
 
         return full_transcription

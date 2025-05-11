@@ -62,7 +62,6 @@ class DiscordClient(commands.Bot):
         self.ollama_client = None
         self.connections = {}
         self.last_activity = None
-        self.audio_file_path = None
         self.recording_file_path = None
         self.tts_manager = None
         self.segment_event = None
@@ -95,7 +94,6 @@ class DiscordClient(commands.Bot):
         self.channel: discord.VoiceChannel = discord.utils.get(self.guild.channels, name="General")
         self.text_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="general")
         self.logs_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="logs")
-        self.audio_file_path = os.path.join(audio_directory, "output.wav")
         self.tts_manager = TTSManager()
 
         for member in self.guild.members:

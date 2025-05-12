@@ -1,19 +1,100 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Bot Configuration</title>
+    {% load static %}
     {% load math_filters %}
+    <meta charset="UTF-8">
+    <title>Config Manager</title>
+    <link rel="stylesheet" type="text/css" href="{% static 'botconfig/style.css' %}">
 </head>
 <body>
-    <h1>Bot Configuration</h1>
-    <ul>
-        <li>
-            Timeout Duration: {{ config.timeout_duration }} seconds
-            ({{ config.timeout_duration|div_by:"60"|floatformat:0 }} minutes)
-        </li>
-        <li>Discord Actions Enabled: {{ config.discord_actions_enabled|yesno:"Yes,No" }}</li>
-        <li>Handle Twitch events: {{ config.handle_twitch_events|yesno:"Yes,No" }}</li>
-        <li>Include Discord Voice Channel invite link in DMs: {{ config.dc_invite_link|yesno:"Yes,No" }}</li>
-    </ul>
+    <h1>Change Configuration</h1>
+        <div id="configDisplay">
+            <p>Timeout length:
+                <span id="timeout">
+                    {{ config.timeout_duration }} seconds
+                    ({{ config.timeout_duration|div_by:"60"|floatformat:0 }} minutes)
+                </span>
+            </p>
+            <p>Discord Actions Enabled: <span id="discord">{{ config.discord_actions_enabled|yesno:"Yes,No" }}</span></p>
+            <p>Twitch Event handling enabled: <span id="twitch">{{ config.handle_twitch_events|yesno:"Yes,No" }}</span></p>
+            <p>Include Discord Voice Channel invite link in DMs: <span id="dc">{{ config.dc_invite_link|yesno:"Yes,No" }}</span></p>
+        </div>
+
+    <div>
+        <label for="timeoutField">Set Timeout (seconds):</label>
+        <input type="number" id="timeoutField" min="1" value="{{ config.timeout_duration }}">
+        <button id="updateTimeout">Update Timeout</button>
+    </div>
+
+    <div class="toggle-buttons">
+        <button id="toggleDiscord">Toggle Discord Actions</button>
+        <button id="toggleTwitch">Toggle Twitch Events</button>
+        <button id="toggleDC">Toggle DC Invite Link</button>
+    </div>
+
+    <script>
+        function formatTimeout(timeout) {
+            let minutes = Math.floor(timeout / 60);
+                return timeout + " seconds (" + minutes + " minutes)";
+        }
+
+        function formatBoolean(value) {
+            return value ? "Yes" : "No";
+        }
+
+        // Helper function to send a POST request to update the config.
+        async function updateConfig(updates) {
+          try {
+            const response = await fetch("/update-config/", {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(updates)
+            });
+            const data = await response.json();
+            console.log("Updated config:", data);
+            if (data.status === "success") {
+              // Optionally update the displayed values with the response.
+              document.getElementById('timeout').textContent = formatTimeout(data.config.timeout_duration);
+              document.getElementById('discord').textContent = formatBoolean(data.config.discord_actions_enabled);
+              document.getElementById('twitch').textContent = formatBoolean(data.config.handle_twitch_events);
+              document.getElementById('dc').textContent = formatBoolean(data.config.dc_invite_link);
+            } else {
+              console.error("Error:", data.message);
+            }
+          } catch (error) {
+            console.error("Request failed:", error);
+          }
+        }
+
+        // Update Timeout event: takes the input value from the number field.
+        document.getElementById("updateTimeout").addEventListener("click", async function() {
+          const inputField = document.getElementById('timeoutField');
+          let newTimeout = parseInt(inputField.value, 10);
+          if (!isNaN(newTimeout) && newTimeout >= 0) {
+            updateConfig({ "timeout_duration": newTimeout });
+          } else {
+            alert("Please enter a valid number for timeout.");
+          }
+        });
+
+        // Toggle functions rely on the current state. For simplicity, the example sends the opposite of the shown value.
+        document.getElementById("toggleDiscord").addEventListener("click", async function() {
+          let current = document.getElementById('discord').textContent.trim() === "Yes";
+          updateConfig({ "discord_actions_enabled": !current });
+        });
+
+        document.getElementById("toggleTwitch").addEventListener("click", async function() {
+          let current = document.getElementById('twitch').textContent.trim() === "Yes";
+          updateConfig({ "handle_twitch_events": !current });
+        });
+
+        document.getElementById("toggleDC").addEventListener("click", async function() {
+          let current = document.getElementById('dc').textContent.trim() === "Yes";
+          updateConfig({ "dc_invite_link": !current });
+        });
+    </script>
 </body>
 </html>

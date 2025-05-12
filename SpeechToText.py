@@ -16,12 +16,12 @@ class SpeechToTextManager:
     def transcribe_audiofile(self, file_path):
         # Transcribe the audio file.
         # The transcribe function returns a dictionary containing the transcription and extra info.
-        result = self.model.transcribe(audio=file_path)
+        result = self.model.transcribe(audio=file_path, language="en")
 
         # Return the transcribed text.
         return result["text"]
 
-    async def transcribe_audiostream(self, audio_stream: io.BytesIO, model) -> str:
+    def transcribe_audio_stream(self, audio_stream: io.BytesIO, model) -> str:
         """
         Given an io.BytesIO stream (containing WAV audio), writes the stream
         to a temporary file and transcribes it using the provided Whisper model.
@@ -36,9 +36,8 @@ class SpeechToTextManager:
                 data = audio_stream.read()
                 f.write(data)
 
-            loop = asyncio.get_running_loop()
             # Call the Whisper transcription in an executor to avoid blocking.
-            result = await loop.run_in_executor(None, model.transcribe, temp_path)
+            result = self.model.transcribe(audio=temp_path, language="en")
             transcription = result.get("text", "").strip()
 
         finally:
@@ -48,7 +47,7 @@ class SpeechToTextManager:
 
         return transcription
 
-    async def process_transcriptions(self, sink_obj) -> str:
+    async def process_utterances(self, sink_obj) -> str:
         """
         Sorts the logged audio chunks by timestamp, transcribes each one using Whisper,
         and returns a combined string with one line per utterance containing the timestamp,
@@ -134,9 +133,9 @@ class SpeechToTextManager:
             # Ensure the buffer is positioned at the start.
             buf.seek(0)
             # Transcribe the audio data using the helper.
-            transcription = await self.transcribe_audiostream(buf, self.model)
+            transcription = self.transcribe_audio_stream(buf, self.model)
             # Format the timestamp (HH:MM:SS).
-            ts_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
+            ts_str = time.strftime("%Y-%m-%d %H.%M:%S", time.localtime(timestamp))
             # Append to the full transcription with a user label.
             full_transcription += f"[{ts_str}] <{user}>: {transcription}\n"
 

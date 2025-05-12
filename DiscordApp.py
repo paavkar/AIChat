@@ -13,7 +13,7 @@ import logging
 from OllamaChat import OllamaClient
 from TextToSpeech import TTSManager
 from SpeechToText import SpeechToTextManager
-from constants import audio_to_play_directory as audio_directory, recorded_audio_directory, transcriptions_directory, BOT_CONFIG_KEY
+from constants import audio_to_play_directory as audio_directory, recorded_audio_directory, transcriptions_directory, BOT_CONFIG_KEY, llm_output_texts_directory
 
 dotenv.load_dotenv()
 LOGGER: logging.Logger = logging.getLogger("DiscordClient")
@@ -71,6 +71,8 @@ class DiscordClient(commands.Bot):
         self.config = {}
         self.username_to_id = {}
         self.audio_queue = asyncio.Queue()
+        self.single_speaker = True
+        self.speaker = ""
 
     async def on_ready(self):
         config_data = await self.redis_conn.get(BOT_CONFIG_KEY)
@@ -91,6 +93,7 @@ class DiscordClient(commands.Bot):
         os.makedirs(audio_directory, exist_ok=True)
         os.makedirs(recorded_audio_directory, exist_ok=True)
         os.makedirs(transcriptions_directory, exist_ok=True)
+        os.makedirs(llm_output_texts_directory, exist_ok=True)
         self.channel: discord.VoiceChannel = discord.utils.get(self.guild.channels, name="General")
         self.text_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="general")
         self.logs_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="logs")
@@ -218,6 +221,7 @@ class DiscordClient(commands.Bot):
 
             for user_id, audio in sink_obj.audio_data.items():
                 display_name = self.id_to_display_name[user_id]
+                self.speaker = display_name
                 # Extract the entire content from the BytesIO buffer.
                 audio.file.seek(0)
                 data = audio.file.read()
@@ -240,42 +244,56 @@ class DiscordClient(commands.Bot):
                 f"Finished recording audio for: {', '.join(recorded_users)}",
                 files=files
             )
-            transcription = await asyncio.to_thread(
-                self.stt.transcribe_audiofile, self.recording_file_path
-            )
 
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            filename = f"simple_transcription_{timestamp}.txt"
+            if self.single_speaker:
+                transcription = await asyncio.to_thread(
+                    self.stt.transcribe_audiofile, self.recording_file_path
+                )
+
+                file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H.%M:%S")
+                transcription = f"[{timestamp}] <{self.speaker}>: {transcription}"
+                filename = f"simple_transcription_{file_timestamp}.txt"
+                file_path = os.path.join(transcriptions_directory, filename)
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(transcription)
+
+                await self.transform_transcription(transcription, file_timestamp)
+        else:
+            LOGGER.info(f"Silence segment, no data recorded.")
+        if sink_obj.utterances and not self.single_speaker:
+            combined_text = await asyncio.to_thread(self.stt.process_utterances, sink_obj)
+            file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filename = f"transcription_{file_timestamp}.txt"
             file_path = os.path.join(transcriptions_directory, filename)
 
             with open(file_path, "w", encoding="utf-8") as f:
-                f.write(transcription)
-
-            message = f"Give a response to the following message: {transcription}"
-            reply = await self.ollama_client.ollama_chat(message)
-
-            try:
-                result_dict = json.loads(reply)
-                output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, result_dict["result"])
-                await self.queue_audio(output_path)
-            except json.JSONDecodeError as error:
-                error_message = "There was an error creating a response."
-                output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, error_message)
-                await self.queue_audio(output_path)
-        else:
-            LOGGER.info(f"Silence segment, no data recorded.")
-        # if sink_obj.utterances:
-        #     combined_text = await self.stt.process_transcriptions(sink_obj)
-        #     # await text_channel.send(f"Combined transcription:\n{combined_text}")
-        #     timestamp = time.strftime("%Y%m%d-%H%M%S")
-        #     filename = f"transcription_{timestamp}.txt"
-        #     file_path = os.path.join(transcriptions_directory, filename)
-        #
-        #     with open(file_path, "w", encoding="utf-8") as f:
-        #         f.write(combined_text)
-        #     LOGGER.info(f"Saved transcription to file {file_path}")
+                f.write(combined_text)
+            LOGGER.info(f"Saved transcription to file {file_path}")
+            await self.transform_transcription(combined_text, file_timestamp)
 
         self.segment_event.set()  # signal that the segment is done
+
+    async def transform_transcription(self, transcription: str, timestamp: str):
+        message = f"Give a response to the following message: {transcription}"
+        reply = await self.ollama_client.ollama_chat(message)
+
+        filename = f"output_{timestamp}.txt"
+        file_path = os.path.join(llm_output_texts_directory, filename)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(reply)
+
+        try:
+            result_dict = json.loads(reply)
+            output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, result_dict["result"])
+            await self.queue_audio(output_path)
+        except json.JSONDecodeError as error:
+            LOGGER.error(error.msg)
+            error_message = "There was an error creating a response."
+            output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, error_message)
+            await self.queue_audio(output_path)
 
     async def queue_audio(self, file_path: str):
         """Add an audio file to the playback queue."""

@@ -18,7 +18,6 @@ class TTSManager:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = TTS("tts_models/en/jenny/jenny").to(self.device)
-        self.output_path = os.path.join(audio_directory, "output.wav")
         os.makedirs(audio_directory, exist_ok=True)
 
     def text_to_audio_file(self, text: str = "It took me quite a long time to develop a voice, and now that I have it I'm not going to be silent."):

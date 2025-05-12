@@ -115,7 +115,7 @@ class DiscordClient(commands.Bot):
         print(f'Message from {message.author}: {message.content}')
         print(f"Message was sent in {message.channel}")
 
-        #await self.process_commands(message)
+        await self.process_commands(message)
 
     async def listen_for_config_updates(self):
         pubsub = self.redis_conn.pubsub()
@@ -375,7 +375,7 @@ discord_client = DiscordClient(command_prefix='!')
 @discord_client.command()
 async def join(ctx: commands.Context):
     vc = await discord_client.get_vc()
-    #await ctx.send(f"Connected to voice chat: {vc.channel}")
+    await ctx.send(f"Connected to voice chat: {vc.channel}")
 
 @discord_client.command()
 async def record(ctx: commands.Context):
@@ -385,13 +385,9 @@ async def record(ctx: commands.Context):
 async def stop_recording(ctx: commands.Context):
     await discord_client.stop_record()
 
-@discord_client.command(name="hello")
-async def hello(ctx: commands.Context):
-    await ctx.send(f"Hello @{ctx.author.name}!")
-
 @discord_client.slash_command(name="hello", description="Greets the user")
 async def hello(ctx: discord.ApplicationContext):
-    await ctx.respond(f"Hello {ctx.user.name}!")
+    await ctx.respond(f"Hello {ctx.user.display_name}!")
 
 @discord_client.command()
 async def leave(ctx: commands.Context):

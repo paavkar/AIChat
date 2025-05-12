@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bot Configuration</title>
+    {% load math_filters %}
+</head>
+<body>
+    <h1>Bot Configuration</h1>
+    <ul>
+        <li>
+            Timeout Duration: {{ config.timeout_duration }} seconds
+            ({{ config.timeout_duration|div_by:"60"|floatformat:0 }} minutes)
+        </li>
+        <li>Discord Actions Enabled: {{ config.discord_actions_enabled|yesno:"Yes,No" }}</li>
+        <li>Handle Twitch events: {{ config.handle_twitch_events|yesno:"Yes,No" }}</li>
+        <li>Include Discord Voice Channel invite link in DMs: {{ config.dc_invite_link|yesno:"Yes,No" }}</li>
+    </ul>
+</body>
+</html>

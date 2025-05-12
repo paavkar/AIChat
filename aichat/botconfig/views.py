@@ -1,13 +1,26 @@
 from django.shortcuts import render
 import json
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt  # Disable CSRF for simplicity here
 import redis.asyncio as redis
+from asgiref.sync import sync_to_async
+
 
 # Create your views here.
 
 # Create a Redis connection (using async Redis client)
 redis_conn = redis.Redis(host="localhost", port=6379, db=0)
+
+async def display_config_view(request):
+    # Await the async function to get the current configuration
+    config = await get_current_config()
+    # Wrap the synchronous render call so that it can be awaited
+    response = await sync_to_async(render)(
+        request,
+        'botconfig/config.html',
+        {'config': config}
+    )
+    return response
 
 async def get_current_config():
     """Retrieve the current configuration from Redis or return fallback defaults."""

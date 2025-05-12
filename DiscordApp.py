@@ -94,7 +94,7 @@ class DiscordClient(commands.Bot):
         os.makedirs(recorded_audio_directory, exist_ok=True)
         os.makedirs(transcriptions_directory, exist_ok=True)
         os.makedirs(llm_output_texts_directory, exist_ok=True)
-        self.channel: discord.VoiceChannel = discord.utils.get(self.guild.channels, name="General")
+        self.channel: discord.VoiceChannel = discord.utils.get(self.guild.channels, name="AIChat")
         self.text_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="general")
         self.logs_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="logs")
         self.tts_manager = TTSManager()
@@ -136,26 +136,29 @@ class DiscordClient(commands.Bot):
         if before.channel is not None and after.channel is None:
             message = f"{member.display_name} left the vc: {before.channel.name}."
             await self.logs_channel.send(message)
-            LOGGER.debug(f"after.channel: {after.channel}")
+            LOGGER.info(f"after.channel: {after.channel}")
 
         update_config = False
-        if after.channel is not None and len(after.channel.members) > 1:
-            self.config["handle_twitch_events"] = False
-            update_config = True
-        elif before.channel is not None and len(before.channel.members) < 2:
-            self.config["handle_twitch_events"] = True
-            update_config = True
-        if before.channel is None and after.channel is not None and len(after.channel.members) < 2:
-            self.config["handle_twitch_events"] = True
-            update_config = True
+        if after.channel is not None and after.channel.id == self.channel.id:
+            if before.channel is None or before.channel.id != self.channel.id:
+                member_count = len(after.channel.members)
+                if member_count > 1:
+                    self.config["handle_twitch_events"] = False
+                    update_config = True
+        elif before.channel is not None and before.channel.id == self.channel.id:
+            if after.channel is None or after.channel != self.channel.id:
+                member_count = len(before.channel.members)
+                if member_count <= 2:
+                    self.config["handle_twitch_events"] = True
+                    update_config = True
 
-        # if update_config:
-        #     config_json = json.dumps(self.config)
-        #     await self.redis_conn.set(BOT_CONFIG_KEY, config_json)
-        #     # Publish to the config_updates channel.
-        #     await self.redis_conn.publish("config_updates", config_json)
-        #     message = f"Updated config: {config_json}"
-        #     #await self.logs_channel.send(message)
+        if update_config:
+            config_json = json.dumps(self.config)
+            await self.redis_conn.set(BOT_CONFIG_KEY, config_json)
+            # Publish to the config_updates channel.
+            await self.redis_conn.publish("config_updates", config_json)
+            message = f"Updated config: {config_json}"
+            #await self.logs_channel.send(message)
 
     async def get_vc(self):
         if self.guild_id not in self.connections:
@@ -245,7 +248,7 @@ class DiscordClient(commands.Bot):
                 files=files
             )
 
-            if not self.single_speaker:
+            if self.single_speaker:
                 transcription = await asyncio.to_thread(
                     self.stt.transcribe_audiofile, self.recording_file_path
                 )
@@ -262,7 +265,7 @@ class DiscordClient(commands.Bot):
                 await self.transform_transcription(transcription, file_timestamp)
         else:
             LOGGER.info(f"Silence segment, no data recorded.")
-        if sink_obj.utterances and self.single_speaker:
+        if sink_obj.utterances and not self.single_speaker:
             LOGGER.info("Started processing individual utterances to get a transcription.")
             combined_text = await asyncio.to_thread(self.stt.process_utterances, sink_obj)
             LOGGER.info("Transcription process is ready.")

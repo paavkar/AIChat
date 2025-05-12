@@ -245,7 +245,7 @@ class DiscordClient(commands.Bot):
                 files=files
             )
 
-            if self.single_speaker:
+            if not self.single_speaker:
                 transcription = await asyncio.to_thread(
                     self.stt.transcribe_audiofile, self.recording_file_path
                 )
@@ -262,8 +262,10 @@ class DiscordClient(commands.Bot):
                 await self.transform_transcription(transcription, file_timestamp)
         else:
             LOGGER.info(f"Silence segment, no data recorded.")
-        if sink_obj.utterances and not self.single_speaker:
+        if sink_obj.utterances and self.single_speaker:
+            LOGGER.info("Started processing individual utterances to get a transcription.")
             combined_text = await asyncio.to_thread(self.stt.process_utterances, sink_obj)
+            LOGGER.info("Transcription process is ready.")
             file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             filename = f"transcription_{file_timestamp}.txt"
             file_path = os.path.join(transcriptions_directory, filename)
@@ -279,21 +281,15 @@ class DiscordClient(commands.Bot):
         message = f"Give a response to the following message: {transcription}"
         reply = await self.ollama_client.ollama_chat(message)
 
+        output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, reply)
+
         filename = f"output_{timestamp}.txt"
         file_path = os.path.join(llm_output_texts_directory, filename)
 
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(reply)
 
-        try:
-            result_dict = json.loads(reply)
-            output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, result_dict["result"])
-            await self.queue_audio(output_path)
-        except json.JSONDecodeError as error:
-            LOGGER.error(error.msg)
-            error_message = "There was an error creating a response."
-            output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, error_message)
-            await self.queue_audio(output_path)
+        await self.queue_audio(output_path)
 
     async def queue_audio(self, file_path: str):
         """Add an audio file to the playback queue."""
@@ -374,20 +370,16 @@ class DiscordClient(commands.Bot):
 discord_client = DiscordClient(command_prefix='!')
 
 @discord_client.command()
-async def play(ctx: discord.ApplicationContext):
-    await discord_client.play_audio(os.path.join("speech_output", "output.wav"))
-
-@discord_client.command()
-async def join(ctx: discord.ApplicationContext):
+async def join(ctx: commands.Context):
     vc = await discord_client.get_vc()
     #await ctx.send(f"Connected to voice chat: {vc.channel}")
 
 @discord_client.command()
-async def record(ctx: discord.ApplicationContext):
+async def record(ctx: commands.Context):
     await discord_client.record()
 
 @discord_client.command(name="stop")
-async def stop_recording(ctx: discord.ApplicationContext):
+async def stop_recording(ctx: commands.Context):
     await discord_client.stop_record()
 
 @discord_client.command(name="hello")
@@ -399,15 +391,14 @@ async def hello(ctx: discord.ApplicationContext):
     await ctx.respond(f"Hello {ctx.user.name}!")
 
 @discord_client.command()
-async def leave(ctx: discord.ApplicationContext):
+async def leave(ctx: commands.Context):
     if discord_client.vc is not None:
         await discord_client.stop_record()
+        await discord_client.vc.disconnect()
         discord_client.vc = None
-        await ctx.voice_client.disconnect()
-        del discord_client.connections[ctx.guild.id]  # Remove the guild from the cache.
-        await ctx.delete()
+        del discord_client.connections[ctx.guild.id]
     else:
-        await ctx.respond("I am currently not recording here.")  # Respond with this if we aren't recording.
+        await ctx.send("I am currently not in a voice channel.")
 
 if __name__ == '__main__':
     discord_client.run(os.getenv("DISCORD_TOKEN"))

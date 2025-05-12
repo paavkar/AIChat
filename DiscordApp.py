@@ -52,7 +52,7 @@ async def monitor_silence(vc: discord.VoiceClient, sink: AutoRecordSink):
 class DiscordClient(commands.Bot):
     def __init__(self, command_prefix):
         intents = discord.Intents.all()
-        super().__init__(command_prefix=command_prefix, intents=intents)
+        super().__init__(command_prefix=commands.when_mentioned_or(command_prefix), intents=intents)
         self.vc = None
         self.text_channel = None
         self.channel = None
@@ -282,7 +282,7 @@ class DiscordClient(commands.Bot):
 
     async def transform_transcription(self, transcription: str, timestamp: str):
         message = f"Give a response to the following message: {transcription}"
-        reply = await self.ollama_client.ollama_chat(message)
+        reply = await self.get_ollama_response(message)
 
         output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, reply)
 
@@ -293,6 +293,11 @@ class DiscordClient(commands.Bot):
             f.write(reply)
 
         await self.queue_audio(output_path)
+
+    async def get_ollama_response(self, message: str) -> str:
+        reply = await self.ollama_client.ollama_chat(message)
+
+        return reply
 
     async def queue_audio(self, file_path: str):
         """Add an audio file to the playback queue."""
@@ -384,6 +389,11 @@ async def record(ctx: commands.Context):
 @discord_client.command(name="stop")
 async def stop_recording(ctx: commands.Context):
     await discord_client.stop_record()
+
+@discord_client.command()
+async def chat(ctx: commands.Context, *, message):
+    reply = await discord_client.get_ollama_response(message)
+    await ctx.reply(reply)
 
 @discord_client.slash_command(name="hello", description="Greets the user")
 async def hello(ctx: discord.ApplicationContext):

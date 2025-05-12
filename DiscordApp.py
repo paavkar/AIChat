@@ -160,7 +160,7 @@ class DiscordClient(commands.Bot):
             message = f"Updated config: {config_json}"
             #await self.logs_channel.send(message)
 
-    async def get_vc(self):
+    async def get_vc(self, ctx = None):
         if self.guild_id not in self.connections:
             vc: discord.VoiceClient = await self.channel.connect()  # Connect to the voice channel specified
             self.connections.update({self.guild_id: vc})  # Updating the cache with the guild and channel.
@@ -168,6 +168,9 @@ class DiscordClient(commands.Bot):
             vc = self.connections[self.guild_id]
 
         self.vc: discord.VoiceClient = vc
+
+        if ctx is not None:
+            await ctx.reply(f"Joined the vc: {vc.channel.name}")
 
         while vc.is_connected():
             await self.record()
@@ -379,12 +382,14 @@ discord_client = DiscordClient(command_prefix='!')
 
 @discord_client.command()
 async def join(ctx: commands.Context):
-    vc = await discord_client.get_vc()
-    await ctx.send(f"Connected to voice chat: {vc.channel}")
+    vc = await discord_client.get_vc(ctx)
 
 @discord_client.command()
 async def record(ctx: commands.Context):
-    await discord_client.record()
+    if discord_client.vc is not None:
+        await discord_client.record()
+    else:
+        await ctx.reply("I am not currently in a VC. Use the !join command first.")
 
 @discord_client.command(name="stop")
 async def stop_recording(ctx: commands.Context):

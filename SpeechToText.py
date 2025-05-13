@@ -60,8 +60,8 @@ class SpeechToTextManager:
         and returns a combined string with one line per utterance containing the timestamp,
         user info, and the transcribed speech.
         """
-        # Ensure utterances are in chronological order.
-        sorted_utterances = sorted(sink_obj.utterances, key=lambda x: x[0])
+        # Ensure utterances are in chronological order grouped by the user
+        sorted_utterances = sorted(sink_obj.utterances, key=lambda x: (x[1], x[0]))
 
         merged_utterances = []
         merge_threshold = 1.0
@@ -129,6 +129,9 @@ class SpeechToTextManager:
             merged_utterances.append(
                 (current_merge["end"], current_merge["user"], current_merge["segment"])
             )
+
+        # Sort the merged utterances by time, so that transcription has proper timing
+        merged_utterances = sorted(merged_utterances, key=lambda x: x[0])
 
         full_transcription = ""
         for timestamp, user, segment in merged_utterances:

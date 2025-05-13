@@ -73,6 +73,9 @@ class DiscordClient(commands.Bot):
         self.audio_queue = asyncio.Queue()
         self.single_speaker = True
         self.speaker = ""
+        self.twitch_raids = []
+        self.priority_messages = []
+        self.twitch_subscriptions = []
 
     async def on_ready(self):
         config_data = await self.redis_conn.get(BOT_CONFIG_KEY)
@@ -103,6 +106,7 @@ class DiscordClient(commands.Bot):
             self.username_to_id[member.display_name] = member.id
 
         asyncio.create_task(self.listen_for_config_updates())
+        asyncio.create_task(self.listen_for_twitch_events())
         asyncio.create_task(self._audio_player())
         LOGGER.info(f'Logged on as {self.user}!')
         LOGGER.info(f"User id: {self.user.id}")
@@ -130,6 +134,27 @@ class DiscordClient(commands.Bot):
                     LOGGER.info(f"Configuration updated: {self.config}")
                 except Exception as e:
                     LOGGER.error("Failed to process config update:", e)
+            await asyncio.sleep(1)
+
+    async def listen_for_twitch_events(self):
+        pubsub = self.redis_conn.pubsub()
+        await pubsub.subscribe("twitch_events")
+        while True:
+            message = await pubsub.get_message(ignore_subscribe_messages=True)
+            if message and message["data"]:
+                try:
+                    event = json.loads(message["data"])
+                    match event["type"]:
+                        case "raid":
+                            self.twitch_raids.append(event)
+                        case "subscription":
+                            self.twitch_subscriptions.append(event)
+                        case "bits":
+                            self.priority_messages.append(event)
+                        case "highlight_message":
+                            self.priority_messages.append(event)
+                except Exception as e:
+                    LOGGER.error("Failed to process twitch event:", e)
             await asyncio.sleep(1)
 
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -246,10 +271,10 @@ class DiscordClient(commands.Bot):
                 discord_file = discord.File(new_file_stream, filename=f"{display_name}.{sink_obj.encoding}")
                 files.append(discord_file)
 
-            await self.logs_channel.send(
-                f"Finished recording audio for: {', '.join(recorded_users)}",
-                files=files
-            )
+            # await self.logs_channel.send(
+            #     f"Finished recording audio for: {', '.join(recorded_users)}",
+            #     files=files
+            # )
 
             if self.single_speaker:
                 transcription_result = await asyncio.to_thread(

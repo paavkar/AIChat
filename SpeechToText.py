@@ -6,8 +6,21 @@ import tempfile
 import io
 import asyncio
 from pydub import AudioSegment
+import logging
+import concurrent.futures
 
 dotenv.load_dotenv()
+
+LOGGER: logging.Logger = logging.getLogger("SpeechToText")
+
+logging.basicConfig(
+    level=logging.INFO,  # Adjust this level (DEBUG, INFO, etc.) as needed
+    format='%(asctime)s:%(levelname)s:%(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler(),  # Outputs to the console
+        #logging.FileHandler('discord.log', encoding='utf-8', mode='w')  # Outputs to a log file
+    ]
+)
 
 class SpeechToTextManager:
     def __init__(self):
@@ -16,7 +29,6 @@ class SpeechToTextManager:
     def transcribe_audiofile(self, file_path):
         # Transcribe the audio file.
         # The transcribe function returns a dictionary containing the transcription and extra info.
-
         try:
             result = self.model.transcribe(audio=file_path, language="en")
 
@@ -54,6 +66,21 @@ class SpeechToTextManager:
 
         return transcription_result
 
+    def convert_utterance(self, utterance):
+        timestamp, user, data = utterance
+        if not isinstance(data, bytes):
+            print(data)
+            return None  # Skip invalid data.
+        try:
+            seg = AudioSegment.from_file(io.BytesIO(data), format="wav")
+        except Exception as e:
+            try:
+                seg = AudioSegment.from_raw(io.BytesIO(data), sample_width=2, frame_rate=48000, channels=2)
+            except Exception as e2:
+                print(f"Error parsing audio segment for user {user}: {e2}")
+                return None
+        return (timestamp, user, seg)
+
     def process_utterances(self, sink_obj) -> dict:
         """
         Sorts the logged audio chunks by timestamp, transcribes each one using Whisper,
@@ -63,72 +90,77 @@ class SpeechToTextManager:
         # Ensure utterances are in chronological order grouped by the user
         sorted_utterances = sorted(sink_obj.utterances, key=lambda x: (x[1], x[0]))
 
+        message = f"Started transforming audio data packets to AudioSegments. There are {len(sorted_utterances)} in total."
+        LOGGER.info(message)
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            conversion_results = list(executor.map(self.convert_utterance, sorted_utterances))
+
+        # Filter out any failed conversions.
+        converted_utterances = [result for result in conversion_results if result is not None]
+        converted_utterances.sort(key=lambda x: x[0])
+
         merged_utterances = []
         merge_threshold = 1.0
-        max_merge_duration = 10.0
         current_merge = None  # will contain [timestamp, user_id, merged_data]
 
-        for timestamp, user, data in sorted_utterances:
-            if not isinstance(data, bytes):
-                print(data)
-                continue  # Skip invalid data.
+        message = f"Started merging the utterances. There are {len(converted_utterances)} utterances in total."
+        LOGGER.info(message)
 
-            try:
-                segment = AudioSegment.from_file(io.BytesIO(data), format="wav")
-            except Exception as e:
-                # If that fails, assume the data is raw PCM.
-                try:
-                    # Adjust these parameters based on how your audio data is recorded.
-                    segment = AudioSegment.from_raw(io.BytesIO(data), sample_width=2, frame_rate=48000, channels=2)
-                except Exception as e2:
-                    print(f"Error parsing audio segment for user {user}: {e2}")
-                    continue
-
+        for timestamp, user, segment in converted_utterances:
             if current_merge is None:
-                # Start a new merge segment.
+                # Initialize with a list of segments.
                 current_merge = {
                     "start": timestamp,
                     "end": timestamp,
                     "user": user,
-                    "segment": segment
+                    "segments": [segment]
                 }
             else:
-                # If it's the same speaker, try to merge.
                 if user == current_merge["user"]:
                     gap = timestamp - current_merge["end"]
-                    overall_duration = timestamp - current_merge["start"]
-                    # Check if the gap is small enough and overall duration is within our limit:
-                    if gap < merge_threshold and overall_duration < max_merge_duration:
-                        # Merge the current utterance.
+                    if gap < merge_threshold:
                         current_merge["end"] = timestamp
-                        current_merge["segment"] += segment
+                        current_merge["segments"].append(segment)
                     else:
-                        # Either the gap is too large or the merged segment becomes too long.
+                        # Finalize current merge.
+                        merged_raw = b"".join(seg.raw_data for seg in current_merge["segments"])
+                        # noinspection PyProtectedMember
+                        concatenated_segment = current_merge["segments"][0]._spawn(merged_raw)
                         merged_utterances.append(
-                            (current_merge["end"], current_merge["user"], current_merge["segment"])
+                            (current_merge["end"], current_merge["user"], concatenated_segment)
                         )
-                        # Start a new merge segment.
                         current_merge = {
                             "start": timestamp,
                             "end": timestamp,
                             "user": user,
-                            "segment": segment
+                            "segments": [segment]
                         }
                 else:
-                    # Different speaker: always finalize the current merge and start a new one.
+                    # Speaker changed: finalize the merge.
+                    merged_raw = b"".join(seg.raw_data for seg in current_merge["segments"])
+                    # noinspection PyProtectedMember
+                    concatenated_segment = current_merge["segments"][0]._spawn(merged_raw)
                     merged_utterances.append(
-                        (current_merge["end"], current_merge["user"], current_merge["segment"])
+                        (current_merge["end"], current_merge["user"], concatenated_segment)
                     )
                     current_merge = {
                         "start": timestamp,
                         "end": timestamp,
                         "user": user,
-                        "segment": segment
+                        "segments": [segment]
                     }
-        if current_merge is not None:
+
+        if current_merge is not None and current_merge["segments"]:
+            merged_raw = b"".join(seg.raw_data for seg in current_merge["segments"])
+            # noinspection PyProtectedMember
+            concatenated_segment = current_merge["segments"][0]._spawn(merged_raw)
             merged_utterances.append(
-                (current_merge["end"], current_merge["user"], current_merge["segment"])
+                (current_merge["end"], current_merge["user"], concatenated_segment)
             )
+
+        message = f"Merging process is done. There are {len(merged_utterances)} merged utterances in total. Starting transcription..."
+        LOGGER.info(message)
 
         # Sort the merged utterances by time, so that transcription has proper timing
         merged_utterances = sorted(merged_utterances, key=lambda x: x[0])

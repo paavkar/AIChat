@@ -282,6 +282,73 @@ class MyComponent(commands.Component):
     async def event_message(self, payload: twitchio.ChatMessage) -> None:
         print(f"[{payload.broadcaster.name}] - {payload.chatter.name}: {payload.text}")
 
+    @commands.Component.listener()
+    async def event_subscription_gift(self, payload: twitchio.ChannelSubscriptionGift):
+        event = {
+            "type": "subscription",
+            "gifted": True,
+            "gifted_amount": payload.total,
+            "tier": payload.tier,
+            "gifter": payload.user,
+            "anonymous": payload.anonymous
+        }
+        await self.bot.redis_conn.publish("twitch_events", json.dumps(event))
+
+    @commands.Component.listener()
+    async def event_subscription(self, payload: twitchio.ChannelSubscribe):
+        if not payload.gift:
+            event = {
+                "type": "subscription",
+                "gifted": False,
+                "tier": payload.tier,
+                "subscriber": payload.user.display_name,
+            }
+            await self.bot.redis_conn.publish("twitch_events", json.dumps(event))
+
+    @commands.Component.listener()
+    async def event_subscription_message(self, payload: twitchio.ChannelSubscriptionMessage):
+        event = {
+            "type": "subscription",
+            "gifted": False,
+            "tier": payload.tier,
+            "subscriber": payload.user.display_name,
+            "months": payload.months,
+            "cumulative_months": payload.cumulative_months,
+            "streak_months": payload.streak_months,
+            "text": payload.text
+        }
+        await self.bot.redis_conn.publish("twitch_events", json.dumps(event))
+
+    @commands.Component.listener()
+    async def event_raid(self, payload: twitchio.ChannelRaid):
+        event = {
+            "type": "raid",
+            "from_broadcaster": payload.from_broadcaster.display_name,
+            "viewer_count": payload.viewer_count
+        }
+        await self.bot.redis_conn.publish("twitch_events", json.dumps(event))
+
+    @commands.Component.listener()
+    async def event_cheer(self, payload: twitchio.ChannelCheer):
+        event = {
+            "type": "bits",
+            "from": payload.user.display_name,
+            "anonymous": payload.anonymous,
+            "amount": payload.bits,
+            "message": payload.message
+        }
+        await self.bot.redis_conn.publish("twitch_events", json.dumps(event))
+
+    @commands.Component.listener()
+    async def event_automatic_redemption_add(self, payload: twitchio.ChannelPointsAutoRedeemAdd):
+        if payload.reward.type == "send_highlighted_message":
+            event = {
+                "type": "highlight_message",
+                "from": payload.user.display_name,
+                "text": payload.text
+            }
+            await self.bot.redis_conn.publish("twitch_events", json.dumps(event))
+
     @commands.command(aliases=["hello", "howdy", "hey"])
     async def hi(self, ctx: commands.Context) -> None:
         """Simple command that says hello!

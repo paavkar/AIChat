@@ -16,17 +16,22 @@ class SpeechToTextManager:
     def transcribe_audiofile(self, file_path):
         # Transcribe the audio file.
         # The transcribe function returns a dictionary containing the transcription and extra info.
-        result = self.model.transcribe(audio=file_path, language="en")
 
-        # Return the transcribed text.
-        return result["text"]
+        try:
+            result = self.model.transcribe(audio=file_path, language="en")
 
-    def transcribe_audio_stream(self, audio_stream: io.BytesIO, model) -> str:
+            # Return the transcribed text.
+            return {"success": True, "transcription": result["text"]}
+        except Exception:
+            return {"success": False}
+
+    def transcribe_audio_stream(self, audio_stream: io.BytesIO, model) -> dict:
         """
         Given an io.BytesIO stream (containing WAV audio), writes the stream
         to a temporary file and transcribes it using the provided Whisper model.
         Returns the transcribed text.
         """
+        transcription_result = {}
         # Use a temporary file to interface with Whisper.
         fd, temp_path = tempfile.mkstemp(suffix=".wav")
         try:
@@ -39,15 +44,17 @@ class SpeechToTextManager:
             # Call the Whisper transcription in an executor to avoid blocking.
             result = self.model.transcribe(audio=temp_path, language="en")
             transcription = result.get("text", "").strip()
-
+            transcription_result = {"success": True, "transcription": transcription}
+        except Exception as e:
+            transcription_result = {"success": False, "error": e}
         finally:
             # Remove the temporary file.
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-        return transcription
+        return transcription_result
 
-    def process_utterances(self, sink_obj) -> str:
+    def process_utterances(self, sink_obj) -> dict:
         """
         Sorts the logged audio chunks by timestamp, transcribes each one using Whisper,
         and returns a combined string with one line per utterance containing the timestamp,
@@ -131,10 +138,12 @@ class SpeechToTextManager:
             # Ensure the buffer is positioned at the start.
             buf.seek(0)
             # Transcribe the audio data using the helper.
-            transcription = self.transcribe_audio_stream(buf, self.model)
+            transcription_result = self.transcribe_audio_stream(buf, self.model)
+            if not transcription_result["success"]:
+                return transcription_result
             # Format the timestamp (HH:MM:SS).
             ts_str = time.strftime("%Y-%m-%d %H.%M:%S", time.localtime(timestamp))
             # Append to the full transcription with a user label.
-            full_transcription += f"[{ts_str}] <{user}>: {transcription}\n"
+            full_transcription += f"[{ts_str}] <{user}>: {transcription_result["transcription"]}\n"
 
-        return full_transcription
+        return {"success": True, "transcription": full_transcription}

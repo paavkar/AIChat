@@ -25,6 +25,7 @@ system_message = (
     "The input will always be in the following format: [date in format %Y-%m-%d %H.%M:%S] <user who was talking>: transcribed speech "
     "An example of the input: [2025-05-12 13.59:53] <John>:  What is Python? "
     "In some cases the input will include multiple lines of the previously mentioned format. "
+    "Do no include the date or speaker information as in the input in your response. "
 )
 
 
@@ -40,14 +41,17 @@ class OllamaClient:
             }
         ]
 
-    async def ollama_chat(self, message):
+    async def ollama_chat(self, message) -> dict:
         ollama_message = {
             'role': 'user',
             'content': message
         }
         self.messages.append(ollama_message)
 
-        response: ChatResponse = await self.client.chat(model='llama3.2:3b', messages=self.messages)
-        self.messages.append({'role': 'assistant', 'content': response.message.content})
+        try:
+            response: ChatResponse = await self.client.chat(model='llama3.2:3b', messages=self.messages)
+            self.messages.append({'role': 'assistant', 'content': response.message.content})
 
-        return response.message.content
+            return {"success": True, "response": response.message.content}
+        except Exception as e:
+            return {"success": False, "error": e}

@@ -252,55 +252,79 @@ class DiscordClient(commands.Bot):
             )
 
             if self.single_speaker:
-                transcription = await asyncio.to_thread(
+                transcription_result = await asyncio.to_thread(
                     self.stt.transcribe_audiofile, self.recording_file_path
                 )
 
-                file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H.%M:%S")
-                transcription = f"[{timestamp}] <{self.speaker}>: {transcription}"
-                filename = f"simple_transcription_{file_timestamp}.txt"
-                file_path = os.path.join(transcriptions_directory, filename)
+                if transcription_result["success"]:
+                    file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H.%M:%S")
+                    transcription = f"[{timestamp}] <{self.speaker}>: {transcription_result["transcription"]}"
+                    filename = f"simple_transcription_{file_timestamp}.txt"
+                    file_path = os.path.join(transcriptions_directory, filename)
 
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(transcription)
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(transcription)
 
-                await self.transform_transcription(transcription, file_timestamp)
+                    await self.transform_transcription(transcription, file_timestamp)
+                else:
+                    LOGGER.error(transcription_result["error"])
+                    message = "There was an error with the transcription process."
+                    await self.error_message(message)
         else:
             LOGGER.info(f"Silence segment, no data recorded.")
         if sink_obj.utterances and not self.single_speaker:
             LOGGER.info("Started processing individual utterances to get a transcription.")
-            combined_text = await asyncio.to_thread(self.stt.process_utterances, sink_obj)
-            LOGGER.info("Transcription process is ready.")
-            file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            filename = f"transcription_{file_timestamp}.txt"
-            file_path = os.path.join(transcriptions_directory, filename)
+            transcription_result = await asyncio.to_thread(self.stt.process_utterances, sink_obj)
 
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(combined_text)
-            LOGGER.info(f"Saved transcription to file {file_path}")
-            await self.transform_transcription(combined_text, file_timestamp)
+            if transcription_result["success"]:
+                LOGGER.info("Transcription process is ready.")
+                file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                filename = f"transcription_{file_timestamp}.txt"
+                file_path = os.path.join(transcriptions_directory, filename)
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(transcription_result["transcription"])
+                LOGGER.info(f"Saved transcription to file {file_path}")
+                await self.transform_transcription(transcription_result["transcription"], file_timestamp)
+            else:
+                LOGGER.error(transcription_result["error"])
+                message = "There was an error with the transcription process."
+                await self.error_message(message)
 
         self.segment_event.set()  # signal that the segment is done
 
+    async def error_message(self, message):
+        tts_result = await asyncio.to_thread(self.tts_manager.text_to_audio_file, message)
+        if tts_result["success"]:
+            await self.queue_audio(tts_result["output-path"])
+
     async def transform_transcription(self, transcription: str, timestamp: str):
         message = f"Give a response to the following message: {transcription}"
-        reply = await self.get_ollama_response(message)
+        ollama_result = await self.get_ollama_response(message)
 
-        output_path = await asyncio.to_thread(self.tts_manager.text_to_audio_file, reply)
+        if ollama_result["success"]:
+            filename = f"output_{timestamp}.txt"
+            file_path = os.path.join(llm_output_texts_directory, filename)
 
-        filename = f"output_{timestamp}.txt"
-        file_path = os.path.join(llm_output_texts_directory, filename)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(ollama_result["response"])
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(reply)
+            tts_result = await asyncio.to_thread(self.tts_manager.text_to_audio_file, ollama_result["response"])
 
-        await self.queue_audio(output_path)
+            if tts_result["success"]:
+                await self.queue_audio(tts_result["output-path"])
+            else:
+                LOGGER.error("There was an error in the TTS method.")
+        else:
+            LOGGER.error(ollama_result["error"])
+            message = "There was an error creating a response."
+            await self.error_message(message)
 
-    async def get_ollama_response(self, message: str) -> str:
-        reply = await self.ollama_client.ollama_chat(message)
+    async def get_ollama_response(self, message: str) -> dict:
+        ollama_response = await self.ollama_client.ollama_chat(message)
 
-        return reply
+        return ollama_response
 
     async def queue_audio(self, file_path: str):
         """Add an audio file to the playback queue."""
@@ -397,8 +421,12 @@ async def stop_recording(ctx: commands.Context):
 
 @discord_client.command()
 async def chat(ctx: commands.Context, *, message):
-    reply = await discord_client.get_ollama_response(message)
-    await ctx.reply(reply)
+    ollama_response = await discord_client.get_ollama_response(message)
+
+    if ollama_response["success"]:
+        await ctx.reply(ollama_response["response"])
+    else:
+        await ctx.reply("There was an error creating a response for you.")
 
 @discord_client.slash_command(name="hello", description="Greets the user")
 async def hello(ctx: discord.ApplicationContext):

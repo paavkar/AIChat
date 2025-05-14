@@ -73,7 +73,7 @@ class SpeechToTextManager:
         sorted_utterances = sorted(sink_obj.utterances, key=lambda x: (x[1], x[0]))
 
         merged_utterances = []
-        merge_threshold = 1.0
+        merge_threshold = 0.5
         current_merge = None  # will contain [timestamp, user_id, merged_data]
 
         LOGGER.info(f"Started merging the utterances. There are {len(sorted_utterances)} utterances in total.")

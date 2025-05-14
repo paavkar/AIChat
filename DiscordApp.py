@@ -332,8 +332,7 @@ class DiscordClient(commands.Bot):
             await self.queue_audio(tts_result["output-path"])
 
     async def transform_transcription(self, transcription: str, timestamp: str):
-        message = f"Give a response to the following message: {transcription}"
-        ollama_result = await self.get_ollama_response(message)
+        ollama_result = await self.get_ollama_response(transcription)
 
         if ollama_result["success"]:
             filename = f"output_{timestamp}.txt"

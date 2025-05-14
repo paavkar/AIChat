@@ -15,3 +15,5 @@ openai-whisper
 pynacl
 redis
 django
+uvicorn
+whitenoise

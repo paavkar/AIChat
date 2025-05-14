@@ -9,6 +9,7 @@ import time
 import redis.asyncio as redis
 import json
 import logging
+from pydub import AudioSegment
 
 from OllamaChat import OllamaClient
 from TextToSpeech import TTSManager
@@ -36,9 +37,14 @@ class AutoRecordSink(discord.sinks.WaveSink):
     # This method is called each time audio data is processed.
     def write(self, data: bytes, user):
         super().write(data, user)
-        self.last_active = time.time()  # update on every frame
+        timestamp = time.time()
+        self.last_active = timestamp  # update on every frame
 
-        self.utterances.append((time.time(), user, data))
+        try:
+            seg = AudioSegment.from_raw(io.BytesIO(data), sample_width=2, frame_rate=48000, channels=2)
+            self.utterances.append((timestamp, user, seg))
+        except Exception as e:
+            LOGGER.error(f"Error parsing audio segment for user {user}: {e}")
 
 # 2. A helper coroutine to monitor for silence.
 # When no audio is received for 2 seconds, it stops the current recording.
@@ -277,6 +283,7 @@ class DiscordClient(commands.Bot):
             # )
 
             if self.single_speaker:
+                LOGGER.info("Started transcribing the audio file.")
                 transcription_result = await asyncio.to_thread(
                     self.stt.transcribe_audiofile, self.recording_file_path
                 )

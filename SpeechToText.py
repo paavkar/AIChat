@@ -4,10 +4,7 @@ import dotenv
 import whisper
 import tempfile
 import io
-import asyncio
-from pydub import AudioSegment
 import logging
-import concurrent.futures
 
 dotenv.load_dotenv()
 
@@ -66,21 +63,6 @@ class SpeechToTextManager:
 
         return transcription_result
 
-    def convert_utterance(self, utterance):
-        timestamp, user, data = utterance
-        if not isinstance(data, bytes):
-            print(data)
-            return None  # Skip invalid data.
-        try:
-            seg = AudioSegment.from_file(io.BytesIO(data), format="wav")
-        except Exception as e:
-            try:
-                seg = AudioSegment.from_raw(io.BytesIO(data), sample_width=2, frame_rate=48000, channels=2)
-            except Exception as e2:
-                print(f"Error parsing audio segment for user {user}: {e2}")
-                return None
-        return (timestamp, user, seg)
-
     def process_utterances(self, sink_obj) -> dict:
         """
         Sorts the logged audio chunks by timestamp, transcribes each one using Whisper,
@@ -90,24 +72,13 @@ class SpeechToTextManager:
         # Ensure utterances are in chronological order grouped by the user
         sorted_utterances = sorted(sink_obj.utterances, key=lambda x: (x[1], x[0]))
 
-        message = f"Started transforming audio data packets to AudioSegments. There are {len(sorted_utterances)} in total."
-        LOGGER.info(message)
-
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            conversion_results = list(executor.map(self.convert_utterance, sorted_utterances))
-
-        # Filter out any failed conversions.
-        converted_utterances = [result for result in conversion_results if result is not None]
-        converted_utterances.sort(key=lambda x: x[0])
-
         merged_utterances = []
         merge_threshold = 1.0
         current_merge = None  # will contain [timestamp, user_id, merged_data]
 
-        message = f"Started merging the utterances. There are {len(converted_utterances)} utterances in total."
-        LOGGER.info(message)
+        LOGGER.info(f"Started merging the utterances. There are {len(sorted_utterances)} utterances in total.")
 
-        for timestamp, user, segment in converted_utterances:
+        for timestamp, user, segment in sorted_utterances:
             if current_merge is None:
                 # Initialize with a list of segments.
                 current_merge = {
@@ -159,8 +130,8 @@ class SpeechToTextManager:
                 (current_merge["end"], current_merge["user"], concatenated_segment)
             )
 
-        message = f"Merging process is done. There are {len(merged_utterances)} merged utterances in total. Starting transcription..."
-        LOGGER.info(message)
+        LOGGER.info(f"Merging process is done. There are {len(merged_utterances)} merged utterances in total. "
+                    f"Starting transcription...")
 
         # Sort the merged utterances by time, so that transcription has proper timing
         merged_utterances = sorted(merged_utterances, key=lambda x: x[0])

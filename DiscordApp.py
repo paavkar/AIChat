@@ -13,7 +13,7 @@ from pydub import AudioSegment
 
 from OllamaChat import OllamaClient
 from TextToSpeech import TTSManager
-from SpeechToText import SpeechToTextManager
+from SpeechToText import STTManager
 from constants import audio_to_play_directory as audio_directory, recorded_audio_directory, transcriptions_directory, BOT_CONFIG_KEY, llm_output_texts_directory
 
 dotenv.load_dotenv()
@@ -31,7 +31,8 @@ logging.basicConfig(
 class AutoRecordSink(discord.sinks.WaveSink):
     def __init__(self):
         super().__init__()
-        self.last_active = time.time()  # record when audio was last received
+        timestamp = time.time()
+        self.last_active = timestamp  # record when audio was last received
         self.utterances = []
 
     # This method is called each time audio data is processed.
@@ -46,12 +47,12 @@ class AutoRecordSink(discord.sinks.WaveSink):
         except Exception as e:
             LOGGER.error(f"Error parsing audio segment for user {user}: {e}")
 
-# 2. A helper coroutine to monitor for silence.
-# When no audio is received for 2 seconds, it stops the current recording.
+# When no audio is received for 2 seconds, a response is triggered.
 async def monitor_silence(vc: discord.VoiceClient, sink: AutoRecordSink):
     while True:
         await asyncio.sleep(0.1)
-        if time.time() - sink.last_active >= 2:
+        elapsed = time.time() - sink.last_active
+        if elapsed >= 1:
             vc.stop_recording()  # this triggers the segment callback below
             break
 
@@ -65,23 +66,28 @@ class DiscordClient(commands.Bot):
         self.logs_channel = None
         self.guild = None
         self.guild_id = None
-        self.ollama_client = None
         self.connections = {}
-        self.last_activity = None
-        self.recording_file_path = None
-        self.tts_manager = None
-        self.segment_event = None
         self.id_to_display_name = {}
-        self.stt = SpeechToTextManager()
-        self.redis_conn = redis.Redis(host="localhost", port=6379, db=0)
-        self.config = {}
         self.username_to_id = {}
-        self.audio_queue = asyncio.Queue()
         self.single_speaker = True
         self.speaker = ""
+        self.last_activity = None
+        self.recording_file_path = None
+        self.segment_event = None
+        self.get_response = False
+        self.transcription_segments = []
+        self.audio_queue = asyncio.Queue()
+        self.redis_conn = redis.Redis(host="localhost", port=6379, db=0)
+        self.config = {}
         self.twitch_raids = []
         self.priority_messages = []
         self.twitch_subscriptions = []
+        self.transcribe_tasks = 0
+        self.stt = STTManager()
+        self.ollama_client = None
+        self.tts = None
+        self.previous_silence_segments = []
+        self.existing_audio = False
 
     async def on_ready(self):
         config_data = await self.redis_conn.get(BOT_CONFIG_KEY)
@@ -106,7 +112,7 @@ class DiscordClient(commands.Bot):
         self.channel: discord.VoiceChannel = discord.utils.get(self.guild.channels, name="AIChat")
         self.text_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="general")
         self.logs_channel: discord.TextChannel = discord.utils.get(self.guild.channels, name="logs")
-        self.tts_manager = TTSManager()
+        self.tts = TTSManager()
 
         for member in self.guild.members:
             self.username_to_id[member.display_name] = member.id
@@ -228,7 +234,7 @@ class DiscordClient(commands.Bot):
             monitor_task.cancel()
 
         # A short delay before starting the next recording session.
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.1)
 
     async def convert_utterances_usernames(self, sink: AutoRecordSink):
         """Converts stored user IDs in utterances to usernames (or display names)."""
@@ -249,12 +255,19 @@ class DiscordClient(commands.Bot):
 
     # Callback once recording stops (i.e. when silence is detected)
     async def segment_callback(self, sink_obj: AutoRecordSink, text_channel: discord.TextChannel):
+        # offload handling the audio data on the sink on a separate task so that recording isn't paused
+        asyncio.create_task(self.handle_segment(sink_obj))
+        self.segment_event.set()  # signal that the segment is done
+
+    async def handle_segment(self, sink_obj):
         await self.convert_utterances_usernames(sink_obj)
         # Process the recorded data only if some audio was captured.
         if sink_obj.audio_data:
+            self.transcribe_tasks += 1
+            self.previous_silence_segments = []
+            self.existing_audio = True
             # Format a list of users for whom audio was recorded.
             recorded_users = [f"<@{user_id}>" for user_id in sink_obj.audio_data.keys()]
-            files = []
 
             for user_id, audio in sink_obj.audio_data.items():
                 display_name = self.id_to_display_name[user_id]
@@ -264,70 +277,90 @@ class DiscordClient(commands.Bot):
                 data = audio.file.read()
                 date = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-                # Save the data to disk with your desired filename.
                 disk_filename = f"{date}-recording_{display_name}.{sink_obj.encoding}"
                 self.recording_file_path = os.path.join(recorded_audio_directory, disk_filename)
                 with open(self.recording_file_path, "wb") as f:
                     f.write(data)
                 LOGGER.info(f"Saved file to disk: {self.recording_file_path}")
 
-                # Create a new BytesIO object for the Discord file,
-                # ensuring it starts from the beginning.
-                new_file_stream = io.BytesIO(data)
-                discord_file = discord.File(new_file_stream, filename=f"{display_name}.{sink_obj.encoding}")
-                files.append(discord_file)
-
-            # await self.logs_channel.send(
-            #     f"Finished recording audio for: {', '.join(recorded_users)}",
-            #     files=files
-            # )
-
             if self.single_speaker:
                 LOGGER.info("Started transcribing the audio file.")
-                transcription_result = await asyncio.to_thread(
-                    self.stt.transcribe_audiofile, self.recording_file_path
-                )
-
-                if transcription_result["success"]:
-                    file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H.%M:%S")
-                    transcription = f"[{timestamp}] <{self.speaker}>: {transcription_result["transcription"]}"
-                    filename = f"simple_transcription_{file_timestamp}.txt"
-                    file_path = os.path.join(transcriptions_directory, filename)
-
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(transcription)
-
-                    await self.transform_transcription(transcription, file_timestamp)
-                else:
-                    LOGGER.error(transcription_result["error"])
-                    message = "There was an error with the transcription process."
-                    await self.error_message(message)
+                await self.transcribe_segment()
+            else:
+                LOGGER.info("Started processing individual utterances to get a transcription.")
+                await self.transcribe_utterances(sink_obj)
         else:
             LOGGER.info(f"Silence segment, no data recorded.")
-        if sink_obj.utterances and not self.single_speaker:
-            LOGGER.info("Started processing individual utterances to get a transcription.")
-            transcription_result = await asyncio.to_thread(self.stt.process_utterances, sink_obj)
+            if len(self.previous_silence_segments) >= 3:
+                # a check if the silence has been at least 2 seconds to signal for a response process
+                if (self.previous_silence_segments[-1] - self.previous_silence_segments[-3] >= 2
+                        and not self.get_response and self.existing_audio):
+                    LOGGER.info("Signaling to get a response...")
+                    self.get_response = True
+                    self.existing_audio = False
+            else:
+                self.previous_silence_segments.append(time.time())
 
-            if transcription_result["success"]:
-                LOGGER.info("Transcription process is ready.")
-                file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                filename = f"transcription_{file_timestamp}.txt"
+    async def transcribe_segment(self):
+        transcription_result = await asyncio.to_thread(
+            self.stt.transcribe_audiofile, self.recording_file_path
+        )
+        await self.process_transcription_result(transcription_result)
+
+    async def transcribe_utterances(self, sink_obj):
+        transcription_result = await asyncio.to_thread(
+            self.stt.process_utterances, sink_obj
+        )
+        await self.process_transcription_result(transcription_result)
+
+    async def process_transcription_result(self, transcription_result: dict):
+        if transcription_result["success"]:
+            LOGGER.info("Transcribing was successful.")
+            file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            timestamp = transcription_result["timestamp"]
+            transcription = transcription_result["transcription"]
+            segment = {
+                "timestamp": timestamp,
+            }
+            self.transcription_segments.append(segment)
+            if self.single_speaker:
+                segment["speaker"] = self.speaker
+                ts_str = time.strftime("%Y-%m-%d %H.%M:%S", time.localtime(timestamp))
+                transcription = f"[{ts_str}] <{self.speaker}>: {transcription}\n"
+            else:
+                transcription = f"{transcription}"
+
+            filename = f"transcription_{file_timestamp}.txt"
+            segment["text"] = transcription
+
+            self.transcribe_tasks -= 1
+            if self.transcribe_tasks <= 0 and self.get_response:
+                sorted_segments = sorted(self.transcription_segments, key=lambda s: s["timestamp"])
+
+                final_transcription = ""
+                for seg in sorted_segments:
+                    final_transcription += f"{seg['text']}"
+
                 file_path = os.path.join(transcriptions_directory, filename)
 
                 with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(transcription_result["transcription"])
-                LOGGER.info(f"Saved transcription to file {file_path}")
-                await self.transform_transcription(transcription_result["transcription"], file_timestamp)
-            else:
-                LOGGER.error(transcription_result["error"])
-                message = "There was an error with the transcription process."
-                await self.error_message(message)
+                    f.write(final_transcription)
 
-        self.segment_event.set()  # signal that the segment is done
+                await self.transform_transcription(final_transcription, file_timestamp)
+                self.get_response = False
+                self.transcription_segments = []
+                self.previous_silence_segments = []
+        else:
+            LOGGER.error(transcription_result["error"])
+            message = "There was an error with the transcription process."
+            await self.error_message(message)
+            self.transcribe_tasks = 0
+            self.get_response = False
+            self.transcription_segments = []
+            self.previous_silence_segments = []
 
     async def error_message(self, message):
-        tts_result = await asyncio.to_thread(self.tts_manager.text_to_audio_file, message)
+        tts_result = await asyncio.to_thread(self.tts.text_to_audio_file, message)
         if tts_result["success"]:
             await self.queue_audio(tts_result["output-path"])
 
@@ -341,7 +374,7 @@ class DiscordClient(commands.Bot):
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(ollama_result["response"])
 
-            tts_result = await asyncio.to_thread(self.tts_manager.text_to_audio_file, ollama_result["response"])
+            tts_result = await asyncio.to_thread(self.tts.text_to_audio_file, ollama_result["response"])
 
             if tts_result["success"]:
                 await self.queue_audio(tts_result["output-path"])

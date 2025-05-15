@@ -19,7 +19,7 @@ logging.basicConfig(
     ]
 )
 
-class SpeechToTextManager:
+class STTManager:
     def __init__(self):
         self.model = whisper.load_model("turbo")
 
@@ -27,10 +27,11 @@ class SpeechToTextManager:
         # Transcribe the audio file.
         # The transcribe function returns a dictionary containing the transcription and extra info.
         try:
+            timestamp = time.time()
             result = self.model.transcribe(audio=file_path, language="en")
 
             # Return the transcribed text.
-            return {"success": True, "transcription": result["text"]}
+            return {"success": True, "transcription": result["text"], "timestamp": timestamp}
         except Exception:
             return {"success": False}
 
@@ -137,7 +138,10 @@ class SpeechToTextManager:
         merged_utterances = sorted(merged_utterances, key=lambda x: x[0])
 
         full_transcription = ""
+        ts = merged_utterances[0][0]
         for timestamp, user, segment in merged_utterances:
+            if timestamp < ts:
+                ts = timestamp
             # Wrap the raw audio data in a BytesIO object.
             buf = io.BytesIO()
             segment.export(buf, format="wav")
@@ -147,9 +151,9 @@ class SpeechToTextManager:
             transcription_result = self.transcribe_audio_stream(buf, self.model)
             if not transcription_result["success"]:
                 return transcription_result
-            # Format the timestamp (HH:MM:SS).
+            # Format the timestamp (HH.MM:SS).
             ts_str = time.strftime("%Y-%m-%d %H.%M:%S", time.localtime(timestamp))
             # Append to the full transcription with a user label.
             full_transcription += f"[{ts_str}] <{user}>: {transcription_result["transcription"]}\n"
 
-        return {"success": True, "transcription": full_transcription}
+        return {"success": True, "transcription": full_transcription, "timestamp": ts}

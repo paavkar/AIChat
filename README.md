@@ -43,7 +43,7 @@ a more sophisticated effort is done to ensure that the audio transcription inclu
 
 Once the transcribing is done, the transcription is given to [Ollama](https://ollama.com/) to get a response from it, this response
 is then given to the TTS service, [Coqui TTS](https://coqui-tts.readthedocs.io/en/latest/), to synthesize
-speech.
+speech. The model/voice used is [Jenny (Dioco)](https://github.com/dioco-group/jenny-tts-dataset).
 
 And finally, when the Ollama response is transformed into a playable audio file, it is queued to be played
 in the voice channel for all to hear. Then you can respond to that and so forth.

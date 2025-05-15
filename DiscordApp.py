@@ -88,6 +88,7 @@ class DiscordClient(commands.Bot):
         self.tts = None
         self.previous_silence_segments = []
         self.existing_audio = False
+        self.checking_response_flag = False
 
     async def on_ready(self):
         config_data = await self.redis_conn.get(BOT_CONFIG_KEY)
@@ -182,6 +183,9 @@ class DiscordClient(commands.Bot):
                 if member_count > 1:
                     self.config["handle_twitch_events"] = False
                     update_config = True
+                if member.id != self.user.id:
+                    message = f"{member.display_name} joined the call. You should greet them."
+                    asyncio.create_task(self.transform_message(message))
         elif before.channel is not None and before.channel.id == self.channel.id:
             if after.channel is None or after.channel != self.channel.id:
                 member_count = len(before.channel.members)
@@ -224,7 +228,7 @@ class DiscordClient(commands.Bot):
         # Start the recording segment.
         self.vc.start_recording(sink, self.segment_callback, self.channel)
 
-        # In parallel, monitor for silence (stopping recording after 2 sec quiet).
+        # In parallel, monitor for silence (stopping recording after 1 sec quiet).
         monitor_task = asyncio.create_task(monitor_silence(self.vc, sink))
         # Wait for the segment (silence) event
         await self.segment_event.wait()
@@ -255,7 +259,7 @@ class DiscordClient(commands.Bot):
 
     # Callback once recording stops (i.e. when silence is detected)
     async def segment_callback(self, sink_obj: AutoRecordSink, text_channel: discord.TextChannel):
-        # offload handling the audio data on the sink on a separate task so that recording isn't paused
+        # Offload handling the audio data on the sink on a separate task so that recording isn't paused
         asyncio.create_task(self.handle_segment(sink_obj))
         self.segment_event.set()  # signal that the segment is done
 
@@ -298,6 +302,9 @@ class DiscordClient(commands.Bot):
                     LOGGER.info("Signaling to get a response...")
                     self.get_response = True
                     self.existing_audio = False
+
+                    if not self.checking_response_flag:
+                        asyncio.create_task(self.check_response_flag())
             else:
                 self.previous_silence_segments.append(time.time())
 
@@ -316,7 +323,6 @@ class DiscordClient(commands.Bot):
     async def process_transcription_result(self, transcription_result: dict):
         if transcription_result["success"]:
             LOGGER.info("Transcribing was successful.")
-            file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             timestamp = transcription_result["timestamp"]
             transcription = transcription_result["transcription"]
             segment = {
@@ -330,12 +336,25 @@ class DiscordClient(commands.Bot):
             else:
                 transcription = f"{transcription}"
 
-            filename = f"transcription_{file_timestamp}.txt"
             segment["text"] = transcription
 
             self.transcribe_tasks -= 1
+        else:
+            LOGGER.error(transcription_result["error"])
+            message = "There was an error with the transcription process."
+            await self.error_message(message)
+            self.transcribe_tasks = 0
+            self.get_response = False
+            self.transcription_segments = []
+            self.previous_silence_segments = []
+
+    async def check_response_flag(self):
+        self.checking_response_flag = True
+        while True:
             if self.transcribe_tasks <= 0 and self.get_response:
                 sorted_segments = sorted(self.transcription_segments, key=lambda s: s["timestamp"])
+                file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                filename = f"transcription_{file_timestamp}.txt"
 
                 final_transcription = ""
                 for seg in sorted_segments:
@@ -346,28 +365,34 @@ class DiscordClient(commands.Bot):
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(final_transcription)
 
-                await self.transform_transcription(final_transcription, file_timestamp)
+                LOGGER.info(f"Transcription saved at {file_path}.")
+
+                await self.transform_message(final_transcription)
                 self.get_response = False
                 self.transcription_segments = []
                 self.previous_silence_segments = []
-        else:
-            LOGGER.error(transcription_result["error"])
-            message = "There was an error with the transcription process."
-            await self.error_message(message)
-            self.transcribe_tasks = 0
-            self.get_response = False
-            self.transcription_segments = []
-            self.previous_silence_segments = []
+            await asyncio.sleep(0.5)
 
     async def error_message(self, message):
+        """
+        Synthesize given error message to speech and add it to playback queue.
+        :param message: Error message
+        :return: None
+        """
         tts_result = await asyncio.to_thread(self.tts.text_to_audio_file, message)
         if tts_result["success"]:
             await self.queue_audio(tts_result["output-path"])
 
-    async def transform_transcription(self, transcription: str, timestamp: str):
-        ollama_result = await self.get_ollama_response(transcription)
+    async def transform_message(self, message: str):
+        """
+        Calls Ollama to get a response to an input, synthesize it to speech and add it to playback queue.
+        :param message: Input for Ollama
+        :return: None
+        """
+        ollama_result = await self.get_ollama_response(message)
 
         if ollama_result["success"]:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             filename = f"output_{timestamp}.txt"
             file_path = os.path.join(llm_output_texts_directory, filename)
 
